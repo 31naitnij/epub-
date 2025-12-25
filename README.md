@@ -1,3 +1,4 @@
+# 这是完全不懂代码的人，使用google Antigravity生成的翻译工具。
 # AI EPUB 翻译工具 (AI EPUB Translator)
 
 这是一个基于 AI API (支持 DeepSeek, OpenAI 等) 的 EPUB 电子书对照翻译工具。它采用物理回填技术，在保证 100% 还原电子书原始布局（CSS, 样式, 图片, 元数据）的同时，提供流畅的、如同对话般的翻译体验。
