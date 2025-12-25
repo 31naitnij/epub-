@@ -1,0 +1,7 @@
+PySide6
+beautifulsoup4
+openai
+lxml
+ebooklib
+markdownify
+markdown

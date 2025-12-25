@@ -1,0 +1,42 @@
+# --- 敏感信息与本地配置 (关键) ---
+config.json
+*.json_cache
+cache/
+output/
+.env
+
+# --- Python 临时文件 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- IDE 与系统文件 ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- 编译临时目录 ---
+build/
+dist/
+*.spec
