@@ -18,6 +18,15 @@ class EPUBConverter:
         with zipfile.ZipFile(epub_path, 'r') as zip_ref:
             zip_ref.extractall(extract_to)
 
+    def should_skip_file(self, rel_path):
+        """Identify if a file should be skipped for translation (e.g., titlepage, cover)."""
+        skip_keywords = ['titlepage', 'title_page', 'cover', 'copyright', 'nav', 'toc', 'jacket']
+        filename = os.path.basename(rel_path).lower()
+        for kw in skip_keywords:
+            if kw in filename:
+                return True
+        return False
+
     def find_content_files(self, extract_to):
         # Scan for HTML/XHTML files
         content_files = []

@@ -66,6 +66,10 @@ class Processor:
             }
             
             for f_rel in files:
+                if converter.should_skip_file(f_rel):
+                    print(f"跳过非正文文件: {f_rel}")
+                    continue
+                    
                 f_abs = os.path.join(working_dir, f_rel)
                 with open(f_abs, 'r', encoding='utf-8') as f_obj:
                     html_content = f_obj.read()
