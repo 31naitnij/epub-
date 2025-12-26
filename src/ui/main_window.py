@@ -17,13 +17,14 @@ class TranslationWorker(QThread):
     finished = Signal(bool)
     error = Signal(str)
 
-    def __init__(self, processor, converter, translator, epub_path, max_chars, single_idx=None):
+    def __init__(self, processor, converter, translator, epub_path, max_chars, context_rounds=1, single_idx=None):
         super().__init__()
         self.processor = processor
         self.converter = converter
         self.translator = translator
         self.epub_path = epub_path
         self.max_chars = max_chars
+        self.context_rounds = context_rounds
         self.single_idx = single_idx
 
     def run(self):
@@ -33,6 +34,7 @@ class TranslationWorker(QThread):
                 self.converter,
                 self.translator,
                 self.max_chars,
+                context_rounds=self.context_rounds,
                 callback=self.progress.emit,
                 single_idx=self.single_idx
             )
@@ -126,6 +128,11 @@ class MainWindow(QMainWindow):
         self.chunk_size_spin.setValue(1000)
         row1.addWidget(QLabel("分块:"))
         row1.addWidget(self.chunk_size_spin, 1)
+        self.context_rounds_spin = QSpinBox()
+        self.context_rounds_spin.setRange(1, 5)
+        self.context_rounds_spin.setValue(1)
+        row1.addWidget(QLabel("上下文轮数:"))
+        row1.addWidget(self.context_rounds_spin, 0)
         config_layout.addLayout(row1)
 
         prompt_layout = QHBoxLayout()
@@ -253,6 +260,7 @@ class MainWindow(QMainWindow):
         self.temp_spin.setValue(s.get('temp', 0.7))
         self.prompt_edit.setPlainText(s.get('prompt', ''))
         self.chunk_size_spin.setValue(s.get('chunk_size', 1000))
+        self.context_rounds_spin.setValue(s.get('context_rounds', 1))
 
     def get_current_settings(self):
         return {
@@ -261,7 +269,8 @@ class MainWindow(QMainWindow):
             'model': self.model_edit.text(),
             'temp': self.temp_spin.value(),
             'prompt': self.prompt_edit.toPlainText(),
-            'chunk_size': self.chunk_size_spin.value()
+            'chunk_size': self.chunk_size_spin.value(),
+            'context_rounds': self.context_rounds_spin.value()
         }
 
     def on_history_selected(self, index):
@@ -355,6 +364,7 @@ class MainWindow(QMainWindow):
             translator, 
             epub_path,
             settings['chunk_size'],
+            context_rounds=settings['context_rounds'],
             single_idx=current_idx
         )
         self.worker.progress.connect(self.on_progress)
@@ -395,7 +405,8 @@ class MainWindow(QMainWindow):
             self.converter, 
             translator, 
             epub_path,
-            settings['chunk_size']
+            settings['chunk_size'],
+            context_rounds=settings['context_rounds']
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)

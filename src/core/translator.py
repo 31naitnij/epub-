@@ -8,15 +8,17 @@ class Translator:
         self.temperature = float(temperature)
         self.system_prompt = system_prompt
 
-    def translate_chunk(self, current_text, prev_orig=None, prev_trans=None):
+    def translate_chunk(self, current_text, history=None):
         messages = [
             {"role": "system", "content": self.system_prompt}
         ]
         
         # Standard multi-turn dialogue context
-        if prev_orig and prev_trans:
-            messages.append({"role": "user", "content": prev_orig})
-            messages.append({"role": "assistant", "content": prev_trans})
+        if history:
+            for h_orig, h_trans in history:
+                if h_orig and h_trans:
+                    messages.append({"role": "user", "content": h_orig})
+                    messages.append({"role": "assistant", "content": h_trans})
             
         messages.append({"role": "user", "content": current_text})
         

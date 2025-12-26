@@ -46,7 +46,7 @@ class Processor:
         base = os.path.basename(epub_filename)
         return os.path.join(self.cache_dir, f"{base}_extracted")
 
-    def process_epub(self, epub_path, converter, translator, max_chars, callback=None, single_idx=None):
+    def process_epub(self, epub_path, converter, translator, max_chars, context_rounds=1, callback=None, single_idx=None):
         cache_file = self.get_cache_filename(epub_path)
         working_dir = self.get_working_dir(epub_path)
         
@@ -94,16 +94,26 @@ class Processor:
         self.status = "running"
         start_idx = cached_data["current_flat_idx"]
         
-        prev_orig = None
-        prev_trans = None
+        history = []
         
+        # Build initial history if resuming
         if start_idx > 0:
-            pf, pc = flat_list[start_idx - 1]
-            prev_orig = cached_data["files"][pf]["chunks"][pc]["orig"]
-            prev_trans = cached_data["files"][pf]["chunks"][pc]["trans"]
+            hist_start = max(0, start_idx - context_rounds)
+            for i in range(hist_start, start_idx):
+                pf, pc = flat_list[i]
+                h_chunk = cached_data["files"][pf]["chunks"][pc]
+                history.append((h_chunk["orig"], h_chunk["trans"]))
 
         if single_idx is not None:
             loop_range = [single_idx]
+            # If translating a single chunk, we should still try to get context for it
+            history = []
+            hist_start = max(0, single_idx - context_rounds)
+            for i in range(hist_start, single_idx):
+                pf, pc = flat_list[i]
+                h_chunk = cached_data["files"][pf]["chunks"][pc]
+                if h_chunk["trans"]: # Only add if it has been translated
+                    history.append((h_chunk["orig"], h_chunk["trans"]))
         else:
             loop_range = range(start_idx, len(flat_list))
 
@@ -119,7 +129,7 @@ class Processor:
             
             # Translate with streaming
             full_translation = ""
-            for partial in translator.translate_chunk(chunk["orig"], prev_orig, prev_trans):
+            for partial in translator.translate_chunk(chunk["orig"], history):
                 full_translation += partial
                 if callback:
                     # Send special value to indicate partial update
@@ -127,9 +137,10 @@ class Processor:
             
             chunk["trans"] = full_translation
             
-            # Update context
-            prev_orig = chunk["orig"]
-            prev_trans = full_translation
+            # Update history
+            history.append((chunk["orig"], full_translation))
+            if len(history) > context_rounds:
+                history.pop(0)
             
             # Final callback for this chunk (finished=True)
             if callback:
