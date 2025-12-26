@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
         config_layout.addLayout(row1)
 
         prompt_layout = QHBoxLayout()
-        default_prompt = "你是基督教神学翻译专家，将以下文本中所有英语内容翻译为中文，其他语言的内容（包括代码、专有名词、混合语言等）请保留原文，不得翻译。严格保持原文的格式，编号、标点符号、换行、空行，整体结构不变。仅输出翻译结果，不要添加任何解释、说明、问候或额外内容，也不要删减或改动原文结构。"
+        default_prompt = "你是一位多语言翻译专家，将以下文本中所有英语内容翻译为中文，其他语言的内容（包括代码、专有名词、混合语言等）请保留原文，不得翻译。严格保持原文的格式，编号、标点符号、换行、空行，整体结构不变。仅输出翻译结果，不要添加任何解释、说明、问候或额外内容，也不要删减或改动原文结构。"
         self.prompt_edit = QTextEdit(default_prompt)
         self.prompt_edit.setMaximumHeight(60)
         prompt_layout.addWidget(QLabel("Prompt:"))
