@@ -9,14 +9,22 @@
 
 ## 🚀 快速开始
 
-### 方式一：直接运行 (推荐)
-1. 下载项目后，进入 Windows 文件夹。
-2. 双击 `dist/AI_EPUB_Translator.exe` 即可直接运行（无需安装 Python）。
-3. 右边有打包好的，可以直接用。
- 
-### 方式二：脚本启动 (环境隔离)
-1. 确保安装了 Python 3.10+。
-2. 双击运行 `run.bat` (Windows) 或执行 `bash run.sh` (macOS/Linux)。脚本会自动安装依赖并启动。
+### 1. 直接下载 Release (推荐 Windows 用户)
+1. 在仓库右侧的 **Releases** 页面下载最新的打包文件。
+2. 解压后，直接双击运行 `AI_EPUB_Translator.exe` 即可使用（无需安装 Python）。
+
+### 2. 本地脚本运行 (全平台)
+1. 确保安装了 Python 3.10 或更高版本。
+2. 下载并解压本项目源码，进入文件夹。
+3. **Windows**: 双击 `run.bat`。
+4. **macOS/Linux**: 终端执行 `bash run.sh`。
+*脚本会自动检测环境、安装依赖并启动程序。*
+
+### 3. macOS 用户自行打包 (生成 .app)
+如果您想要生成一个可以直接双击运行的苹果程序：
+1. 打开终端，进入本项目文件夹。
+2. 执行 `bash build_macos.sh`。
+3. 等待完成后，在 `dist/` 文件夹下即可看到生成的 `AI_EPUB_Translator.app`。
 
 ## 🛠️ 使用步骤
 
