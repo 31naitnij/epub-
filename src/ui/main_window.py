@@ -188,6 +188,7 @@ class MainWindow(QMainWindow):
         self.chunk_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.chunk_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.chunk_table.setSelectionMode(QAbstractItemView.ExtendedSelection) # Allow multiple
+        self.chunk_table.verticalHeader().setVisible(False) # Hide default row numbers
         self.chunk_table.itemSelectionChanged.connect(self.on_table_selection_changed)
         
         table_layout.addWidget(self.chunk_table)
@@ -275,6 +276,8 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", "All Supported Files (*.epub *.docx *.pdf *.txt *.md *.odt);;All Files (*.*)")
         if file_path:
             self.epub_path_edit.setText(file_path)
+            # Try auto-load cache if exists
+            self.init_processor_and_chunks(autoload=True)
 
     def browse_cache(self):
         dir_path = QFileDialog.getExistingDirectory(self, "选择缓存目录")
@@ -310,17 +313,17 @@ class MainWindow(QMainWindow):
     def set_settings(self, s):
         self.api_key_edit.setText(s.get('api_key', ''))
         self.api_url_edit.setText(s.get('api_url', ''))
-        self.model_edit.setText(s.get('model', ''))
+        self.model_edit.setText(s.get('model', 'gpt-4o'))
         self.temp_spin.setValue(s.get('temp', 0.7))
-        self.prompt_edit.setPlainText(s.get('prompt', ''))
-        self.chunk_size_spin.setValue(s.get('chunk_size', 1000))
+        self.prompt_edit.setPlainText(s.get('prompt', ""))
+        self.chunk_size_spin.setValue(s['chunk_size'])
         self.context_rounds_spin.setValue(s.get('context_rounds', 1))
 
     def get_current_settings(self):
         return {
-            'api_key': self.api_key_edit.text(),
-            'api_url': self.api_url_edit.text(),
-            'model': self.model_edit.text(),
+            'api_key': self.api_key_edit.text().strip(),
+            'api_url': self.api_url_edit.text().strip(),
+            'model': self.model_edit.text().strip(),
             'temp': self.temp_spin.value(),
             'prompt': self.prompt_edit.toPlainText(),
             'chunk_size': self.chunk_size_spin.value(),
@@ -339,10 +342,11 @@ class MainWindow(QMainWindow):
             self.btn_translate_sel.setEnabled(True)
             self.btn_output.setEnabled(True)
 
-    def init_processor_and_chunks(self):
+    def init_processor_and_chunks(self, autoload=False):
         file_path = self.epub_path_edit.text()
         if not file_path or not os.path.exists(file_path):
-            QMessageBox.warning(self, "警告", "请先选择有效的文件")
+            if not autoload:
+               QMessageBox.warning(self, "警告", "请先选择有效的文件")
             return False
 
         settings = self.get_current_settings()
@@ -362,17 +366,26 @@ class MainWindow(QMainWindow):
         self.current_mode = "epub_native" if (is_epub_input and is_epub_output_req) else "pandoc_generic"
         
         try:
-            self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
+            if not autoload:
+                self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
             
             if self.current_mode == "epub_native":
-                cache_data = self.processor.process_epub_init(file_path, self.converter, settings['chunk_size'])
+                cache_data = self.processor.process_epub_init(file_path, self.converter, settings['chunk_size'], only_load=autoload)
             else:
                 # Pandoc Mode
-                if not self.processor.pandoc.check_availability():
+                if not autoload and not self.processor.pandoc.check_availability():
                    QMessageBox.critical(self, "错误", "未检测到 Pandoc，无法执行此格式转换。请安装 Pandoc。")
                    return False
-                cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'])
+                # If autoloading and no pandoc, wait, process_pandoc_init doesn't use pandoc if only_load=True/cache exists
+                # But logical check is safer. The processor logic handles "only_load -> return None if no cache".
+                # If cache exists, it returns it instantly no matter if pandoc installed (assuming simple read).
+                cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'], only_load=autoload)
             
+            if cache_data is None:
+                if autoload: return False
+                # Should have been handled by processor raising error or returning None if logic failed
+                return False
+
             self.flat_chunks = []
             self.chunk_table.setRowCount(0)
             self.chunk_table.blockSignals(True)
@@ -400,10 +413,16 @@ class MainWindow(QMainWindow):
             # Select first row if exists
             if row > 0:
                 self.chunk_table.selectRow(0)
+            
+            if autoload:
+                self.status_label.setText("已自动加载上次的翻译进度。")
+                self.btn_translate_sel.setEnabled(True)
+                self.btn_output.setEnabled(True)
                 
             return True
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"分块处理失败: {e}\n(如果是 DOCX/PDF 转换，请确保已安装 Pandoc)")
+            if not autoload:
+                QMessageBox.critical(self, "错误", f"分块处理失败: {e}\n(如果是 DOCX/PDF 转换，请确保已安装 Pandoc)")
             return False
 
     def on_table_selection_changed(self):

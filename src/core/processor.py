@@ -49,7 +49,7 @@ class Processor:
         return os.path.join(self.cache_dir, f"{base}_extracted")
 
     # --- Mode 1: Legacy EPUB (Strict structure preservation) ---
-    def process_epub_init(self, epub_path, converter, max_chars):
+    def process_epub_init(self, epub_path, converter, max_chars, only_load=False):
         """
         Initialize cache for EPUB Native mode.
         """
@@ -60,6 +60,9 @@ class Processor:
         
         if cached_data and cached_data.get("source_type") == "epub_native":
             return cached_data
+
+        if only_load:
+            return None
 
         # Step 1: Unzip
         converter.unzip_epub(epub_path, working_dir)
@@ -165,7 +168,7 @@ class Processor:
         return True
 
     # --- Mode 2: Pandoc (Generic) ---
-    def process_pandoc_init(self, input_path, max_chars):
+    def process_pandoc_init(self, input_path, max_chars, only_load=False):
         """
         Initialize the generic cache by converting Input -> MD via Pandoc.
         """
@@ -174,6 +177,9 @@ class Processor:
         
         if cached_data and cached_data.get("source_type") == "pandoc_generic":
              return cached_data
+
+        if only_load:
+            return None
 
         # New initialization
         # 1. Convert to MD

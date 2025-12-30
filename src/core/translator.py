@@ -3,7 +3,7 @@ import json
 
 class Translator:
     def __init__(self, api_key, base_url, model, temperature, system_prompt):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=1800.0)
         self.model = model
         self.temperature = float(temperature)
         self.system_prompt = system_prompt

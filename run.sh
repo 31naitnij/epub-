@@ -1,18 +1,25 @@
 #!/bin/bash
-
-# 确保脚本在出错时停止
 set -e
 
-echo "[1/2] 正在检查并安装必要的依赖项..."
-# 使用 python3，因为 macOS 默认可能包含 python2 或需要显式指定 python3
-python3 -m pip install -r requirements.txt
+VENV_DIR=".venv"
 
+# 1. Check/Create venv
+if [ ! -d "$VENV_DIR" ]; then
+    echo "[1/3] Creating virtual environment ($VENV_DIR)..."
+    python3 -m venv "$VENV_DIR"
+fi
+
+# 2. Install dependencies
+echo "[2/3] Checking dependencies..."
+"$VENV_DIR/bin/pip" install -r requirements.txt --quiet --disable-pip-version-check
+
+# 3. Run
 echo ""
-echo "[2/2] 正在启动 AI EPUB 翻译工具..."
-python3 main.py
+echo "[3/3] Starting AI EPUB Translator..."
+"$VENV_DIR/bin/python3" main.py
 
 if [ $? -ne 0 ]; then
     echo ""
-    echo "程序运行出错，请检查上方报错信息。"
-    read -p "按任意键退出..."
+    echo "Program exited with error."
+    read -p "Press any key to exit..."
 fi
