@@ -29,6 +29,14 @@ class ConfigManager:
         with open(self.config_path, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, ensure_ascii=False, indent=4)
 
+    def set_value(self, key, value):
+        self.config[key] = value
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(self.config, f, ensure_ascii=False, indent=4)
+
+    def get_value(self, key, default=None):
+        return self.config.get(key, default)
+
     def get_history(self):
         return self.config.get("history", [])
 

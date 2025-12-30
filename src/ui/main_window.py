@@ -1,11 +1,13 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QLineEdit, QPushButton, QTextEdit, 
                              QComboBox, QFileDialog, QSplitter, QProgressBar,
-                             QMessageBox, QGroupBox, QSpinBox, QDoubleSpinBox)
+                             QMessageBox, QGroupBox, QSpinBox, QDoubleSpinBox,
+                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QIcon
 import os
 import sys
+import shutil
 
 from src.core.config_manager import ConfigManager
 from src.core.converter import EPUBConverter
@@ -17,7 +19,7 @@ class TranslationWorker(QThread):
     finished = Signal(bool)
     error = Signal(str)
 
-    def __init__(self, processor, converter, translator, epub_path, max_chars, context_rounds=1, single_idx=None):
+    def __init__(self, processor, converter, translator, epub_path, max_chars, context_rounds=1, target_indices=None, mode="epub_native"):
         super().__init__()
         self.processor = processor
         self.converter = converter
@@ -25,19 +27,28 @@ class TranslationWorker(QThread):
         self.epub_path = epub_path
         self.max_chars = max_chars
         self.context_rounds = context_rounds
-        self.single_idx = single_idx
+        self.target_indices = target_indices
+        self.mode = mode
 
     def run(self):
         try:
-            result = self.processor.process_epub(
-                self.epub_path,
-                self.converter,
-                self.translator,
-                self.max_chars,
-                context_rounds=self.context_rounds,
-                callback=self.progress.emit,
-                single_idx=self.single_idx
-            )
+            if self.mode == "epub_native":
+                result = self.processor.process_epub_run(
+                    self.epub_path,
+                    self.translator,
+                    context_rounds=self.context_rounds,
+                    callback=self.progress.emit,
+                    target_indices=self.target_indices
+                )
+            else:
+                 # Pandoc Mode
+                result = self.processor.process_pandoc_run(
+                    self.epub_path,
+                    self.translator,
+                    context_rounds=self.context_rounds,
+                    callback=self.progress.emit,
+                    target_indices=self.target_indices
+                )
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
@@ -97,6 +108,16 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.output_path_edit)
         output_layout.addWidget(btn_browse_output)
         path_layout.addLayout(output_layout)
+        
+        # New Output Format Selector
+        format_layout = QHBoxLayout()
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["Auto (EPUB/Pandoc)", "EPUB", "DOCX (A4)", "Markdown"])
+        format_layout.addWidget(QLabel("输出格式:"))
+        format_layout.addWidget(self.format_combo)
+        format_layout.addStretch()
+        path_layout.addLayout(format_layout)
+        
         top_layout.addWidget(path_group)
 
         # API 配置区
@@ -146,34 +167,55 @@ class MainWindow(QMainWindow):
         
         self.main_splitter.addWidget(top_widget)
 
-        # --- 3. 中间对照区 (导航 + 左右分栏) ---
+        # --- 3. 中间对照区 (列表 + 左右分栏) ---
         mid_widget = QWidget()
         mid_layout = QVBoxLayout(mid_widget)
         mid_layout.setContentsMargins(0, 0, 0, 0)
         
-        nav_layout = QHBoxLayout()
-        self.chunk_spin = QSpinBox()
-        self.chunk_spin.setRange(1, 1)
-        self.chunk_spin.valueChanged.connect(self.on_chunk_spin_changed)
-        nav_layout.addWidget(QLabel("全局区块编号:"))
-        nav_layout.addWidget(self.chunk_spin)
-        self.chunk_total_label = QLabel("/ 1")
-        nav_layout.addWidget(self.chunk_total_label)
-        self.btn_save_edit = QPushButton("保存修改")
+        # New Mid Splitter: Table (Left) vs Editors (Right)
+        self.mid_splitter = QSplitter(Qt.Horizontal)
+        
+        # Left: Chunk Table
+        table_widget = QWidget()
+        table_layout = QVBoxLayout(table_widget)
+        table_layout.setContentsMargins(0,0,0,0)
+        
+        self.chunk_table = QTableWidget()
+        self.chunk_table.setColumnCount(3)
+        self.chunk_table.setHorizontalHeaderLabels(["ID", "状态", "原文预览"])
+        self.chunk_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.chunk_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.chunk_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.chunk_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.chunk_table.setSelectionMode(QAbstractItemView.ExtendedSelection) # Allow multiple
+        self.chunk_table.itemSelectionChanged.connect(self.on_table_selection_changed)
+        
+        table_layout.addWidget(self.chunk_table)
+        
+        # Save Button below table for quick access
+        self.btn_save_edit = QPushButton("保存当前块修改")
         self.btn_save_edit.clicked.connect(self.save_manual_edit)
-        nav_layout.addWidget(self.btn_save_edit)
-        nav_layout.addStretch()
-        mid_layout.addLayout(nav_layout)
+        table_layout.addWidget(self.btn_save_edit)
+        
+        self.mid_splitter.addWidget(table_widget)
 
-        self.horizontal_splitter = QSplitter(Qt.Horizontal)
+        # Right: Editors
+        self.editor_splitter = QSplitter(Qt.Horizontal)
         self.orig_text_edit = QTextEdit()
         self.orig_text_edit.setPlaceholderText("原文...")
         self.orig_text_edit.setReadOnly(True)
         self.trans_text_edit = QTextEdit()
         self.trans_text_edit.setPlaceholderText("译文...")
-        self.horizontal_splitter.addWidget(self.orig_text_edit)
-        self.horizontal_splitter.addWidget(self.trans_text_edit)
-        mid_layout.addWidget(self.horizontal_splitter)
+        self.editor_splitter.addWidget(self.orig_text_edit)
+        self.editor_splitter.addWidget(self.trans_text_edit)
+        
+        self.mid_splitter.addWidget(self.editor_splitter)
+        
+        # Set stretch: Table 1 part, Editors 3 parts
+        self.mid_splitter.setStretchFactor(0, 1)
+        self.mid_splitter.setStretchFactor(1, 3)
+        
+        mid_layout.addWidget(self.mid_splitter)
         
         self.main_splitter.addWidget(mid_widget)
 
@@ -185,11 +227,11 @@ class MainWindow(QMainWindow):
         ctrl_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.btn_prepare = QPushButton("仅分块处理")
-        self.btn_translate_sel = QPushButton("翻译当前块")
+        self.btn_translate_sel = QPushButton("翻译选中块")
         self.btn_start = QPushButton("全部翻译")
         self.btn_stop = QPushButton("停止")
         self.btn_clear_cache = QPushButton("清除缓存")
-        self.btn_output = QPushButton("导出 EPUB")
+        self.btn_output = QPushButton("导出")
         
         self.btn_prepare.clicked.connect(self.prepare_chunks_only)
         self.btn_translate_sel.clicked.connect(self.translate_selected_chunk)
@@ -230,7 +272,7 @@ class MainWindow(QMainWindow):
         self.current_cache_data = None
 
     def browse_epub(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择 EPUB 文件", "", "EPUB Files (*.epub)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", "All Supported Files (*.epub *.docx *.pdf *.txt *.md *.odt);;All Files (*.*)")
         if file_path:
             self.epub_path_edit.setText(file_path)
 
@@ -238,13 +280,25 @@ class MainWindow(QMainWindow):
         dir_path = QFileDialog.getExistingDirectory(self, "选择缓存目录")
         if dir_path:
             self.cache_path_edit.setText(dir_path)
+            self.config_manager.set_value('cache_dir', dir_path)
 
     def browse_output(self):
         dir_path = QFileDialog.getExistingDirectory(self, "选择输出目录")
         if dir_path:
             self.output_path_edit.setText(dir_path)
+            self.config_manager.set_value('output_dir', dir_path)
 
     def load_settings_history(self):
+        # Load Global Paths
+        cache_dir = self.config_manager.get_value('cache_dir')
+        if cache_dir and os.path.exists(cache_dir):
+            self.cache_path_edit.setText(cache_dir)
+            
+        output_dir = self.config_manager.get_value('output_dir')
+        if output_dir and os.path.exists(output_dir):
+            self.output_path_edit.setText(output_dir)
+
+        # Load API History
         history = self.config_manager.get_history()
         self.history_combo.clear()
         for h in history:
@@ -286,62 +340,117 @@ class MainWindow(QMainWindow):
             self.btn_output.setEnabled(True)
 
     def init_processor_and_chunks(self):
-        epub_path = self.epub_path_edit.text()
-        if not epub_path or not os.path.exists(epub_path):
-            QMessageBox.warning(self, "警告", "请先选择有效的 EPUB 文件")
+        file_path = self.epub_path_edit.text()
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "警告", "请先选择有效的文件")
             return False
 
         settings = self.get_current_settings()
         cache_dir = self.cache_path_edit.text()
         self.processor = Processor(cache_dir)
         
+        # Decide mode
+        ext = os.path.splitext(file_path)[1].lower()
+        out_fmt = self.format_combo.currentText()
+        
+        # Logic: 
+        # If input is EPUB and output is Auto or EPUB -> EPUB Native
+        # Else -> Pandoc Generic
+        is_epub_input = (ext == '.epub')
+        is_epub_output_req = ("EPUB" in out_fmt) or ("Auto" in out_fmt)
+        
+        self.current_mode = "epub_native" if (is_epub_input and is_epub_output_req) else "pandoc_generic"
+        
         try:
-            self.status_label.setText("正在执行分块解析...")
-            cache_file = self.processor.get_cache_filename(epub_path)
-            cache_data = self.processor.load_cache(cache_file)
+            self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
             
-            if not cache_data:
-                working_dir = self.processor.get_working_dir(epub_path)
-                self.converter.unzip_epub(epub_path, working_dir)
-                files = self.converter.find_content_files(working_dir)
-                cache_data = {
-                    "epub_path": epub_path,
-                    "current_flat_idx": 0,
-                    "files": [],
-                    "finished": False
-                }
-                for f_rel in files:
-                    with open(os.path.join(working_dir, f_rel), 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    md = self.converter.html_to_markdown(content)
-                    chunks = self.processor.chunk_text(md, settings['chunk_size'])
-                    cache_data["files"].append({
-                        "rel_path": f_rel,
-                        "chunks": [{"orig": c, "trans": ""} for c in chunks],
-                        "finished": False
-                    })
-                self.processor.save_cache(cache_file, cache_data)
+            if self.current_mode == "epub_native":
+                cache_data = self.processor.process_epub_init(file_path, self.converter, settings['chunk_size'])
+            else:
+                # Pandoc Mode
+                if not self.processor.pandoc.check_availability():
+                   QMessageBox.critical(self, "错误", "未检测到 Pandoc，无法执行此格式转换。请安装 Pandoc。")
+                   return False
+                cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'])
             
             self.flat_chunks = []
-            for f_i, f_data in enumerate(cache_data["files"]):
-                for c_i, _ in enumerate(f_data["chunks"]):
-                    self.flat_chunks.append((f_i, c_i))
+            self.chunk_table.setRowCount(0)
+            self.chunk_table.blockSignals(True)
             
-            total = len(self.flat_chunks)
-            self.chunk_spin.blockSignals(True)
-            self.chunk_spin.setRange(1, total)
-            self.chunk_total_label.setText(f"/ {total}")
-            self.chunk_spin.blockSignals(False)
+            row = 0
+            for f_i, f_data in enumerate(cache_data["files"]):
+                for c_i, c_data in enumerate(f_data["chunks"]):
+                    self.flat_chunks.append((f_i, c_i))
+                    
+                    self.chunk_table.insertRow(row)
+                    # ID
+                    self.chunk_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+                    # Status
+                    status_str = "已翻译" if c_data["trans"] else "未翻译"
+                    self.chunk_table.setItem(row, 1, QTableWidgetItem(status_str))
+                    # Preview
+                    preview = c_data["orig"][:50].replace("\n", " ") + "..."
+                    self.chunk_table.setItem(row, 2, QTableWidgetItem(preview))
+                    
+                    row += 1
+            
+            self.chunk_table.blockSignals(False)
             self.current_cache_data = cache_data
-            self.on_chunk_spin_changed(self.chunk_spin.value())
+            
+            # Select first row if exists
+            if row > 0:
+                self.chunk_table.selectRow(0)
+                
             return True
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"分块处理失败: {e}")
+            QMessageBox.critical(self, "错误", f"分块处理失败: {e}\n(如果是 DOCX/PDF 转换，请确保已安装 Pandoc)")
             return False
 
-    def translate_selected_chunk(self):
-        if not self.init_processor_and_chunks(): return
+    def on_table_selection_changed(self):
+        selected_items = self.chunk_table.selectedItems()
+        if not selected_items: return
         
+        # Determine unique rows
+        rows = sorted(list(set(item.row() for item in selected_items)))
+        if not rows: return
+        
+        # Preview first selected row
+        first_row = rows[0]
+        self.load_chunk_into_editor(first_row)
+        
+        if len(rows) > 1:
+            self.status_label.setText(f"已选择 {len(rows)} 个块待翻译")
+            
+    def load_chunk_into_editor(self, flat_idx):
+        if not hasattr(self, 'flat_chunks') or not self.flat_chunks: return
+        
+        # Backup currently edited if logic allows? 
+        # For simplicity, we only load. Saving must be manual or auto on navigation if implemented.
+        # But here we stick to manual "Save" button to avoid overwriting issues on multi-select.
+        
+        ch_idx, ck_idx = self.flat_chunks[flat_idx]
+        cache_data = self.current_cache_data
+        
+        if cache_data and ch_idx < len(cache_data["files"]):
+            chunk = cache_data["files"][ch_idx]["chunks"][ck_idx]
+            self.orig_text_edit.setPlainText(chunk["orig"])
+            self.trans_text_edit.setPlainText(chunk["trans"])
+            self.current_indices = (ch_idx, ck_idx)
+            self.current_flat_idx_view = flat_idx # track which row is in editor
+            self.status_label.setText(f"查看：ID {flat_idx + 1}")
+
+    def translate_selected_chunk(self):
+        # Translate ALL selected rows
+        if not self.init_processor_and_chunks(): return # Ensure init (though mostly redundant if already loaded)
+        
+        # Get selected rows
+        selected_items = self.chunk_table.selectedItems()
+        rows = sorted(list(set(item.row() for item in selected_items)))
+        
+        if not rows:
+            QMessageBox.warning(self, "提示", "请先在列表中选择要翻译的块")
+            return
+
         settings = self.get_current_settings()
         translator = Translator(
             settings['api_key'], 
@@ -351,27 +460,29 @@ class MainWindow(QMainWindow):
             settings['prompt']
         )
         
-        epub_path = self.epub_path_edit.text()
-        current_idx = self.chunk_spin.value() - 1
+        file_path = self.epub_path_edit.text()
         
         self.btn_start.setEnabled(False)
         self.btn_translate_sel.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self.btn_output.setEnabled(False)
+        self.btn_clear_cache.setEnabled(False)
         
         self.worker = TranslationWorker(
             self.processor, 
             self.converter, 
             translator, 
-            epub_path,
+            file_path,
             settings['chunk_size'],
             context_rounds=settings['context_rounds'],
-            single_idx=current_idx
+            target_indices=rows, # Pass list of flat indices
+            mode=self.current_mode
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
-        self.status_label.setText(f"正在翻译第 {current_idx+1} 块...")
+        self.status_label.setText(f"开始翻译选中的 {len(rows)} 个块...")
 
     def start_translation(self):
         if not self.init_processor_and_chunks(): return
@@ -393,7 +504,7 @@ class MainWindow(QMainWindow):
             settings['prompt']
         )
 
-        epub_path = self.epub_path_edit.text()
+        file_path = self.epub_path_edit.text()
         self.btn_start.setEnabled(False)
         self.btn_translate_sel.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -404,55 +515,59 @@ class MainWindow(QMainWindow):
             self.processor, 
             self.converter, 
             translator, 
-            epub_path,
+            file_path,
             settings['chunk_size'],
-            context_rounds=settings['context_rounds']
+            context_rounds=settings['context_rounds'],
+            mode=self.current_mode
+            # No target_indices = Process ALL from Resume point
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
-        self.status_label.setText("翻译执行中...")
+        self.status_label.setText("全部翻译执行中...")
 
     def stop_translation(self):
         if self.processor:
             self.processor.status = "stopped"
             self.status_label.setText("正在停止...")
 
-    def on_chunk_spin_changed(self, value):
-        if not hasattr(self, 'flat_chunks') or not self.flat_chunks:
-            return
-        
-        ch_idx, ck_idx = self.flat_chunks[value - 1]
-        epub_path = self.epub_path_edit.text()
-        
-        # Safe access to processor/cache
-        cache_dir = self.cache_path_edit.text()
-        temp_proc = self.processor or Processor(cache_dir)
-        cache_file = temp_proc.get_cache_filename(epub_path)
-        cache_data = temp_proc.load_cache(cache_file) or self.current_cache_data
-        
-        if cache_data and ch_idx < len(cache_data["files"]):
-            chunk = cache_data["files"][ch_idx]["chunks"][ck_idx]
-            self.orig_text_edit.setPlainText(chunk["orig"])
-            self.trans_text_edit.setPlainText(chunk["trans"])
-            self.current_indices = (ch_idx, ck_idx)
-            self.status_label.setText(f"查看：文件 {ch_idx+1}, 块 {ck_idx+1}")
-
     def on_progress(self, current_idx, total, orig, trans, is_finished):
-        self.chunk_spin.blockSignals(True)
-        self.chunk_spin.setValue(current_idx + 1)
-        self.chunk_spin.blockSignals(False)
+        if not hasattr(self, 'chunk_table'): return
         
-        self.orig_text_edit.setPlainText(orig)
-        self.trans_text_edit.setPlainText(trans)
+        # 1. Update In-Memory Cache (Critical for Review)
+        if hasattr(self, 'flat_chunks') and hasattr(self, 'current_cache_data'):
+            f_idx, c_idx = self.flat_chunks[current_idx]
+            if self.current_cache_data:
+                self.current_cache_data["files"][f_idx]["chunks"][c_idx]["trans"] = trans
+        
+        # 2. Update Table Status
+        if current_idx < self.chunk_table.rowCount():
+             status_item = self.chunk_table.item(current_idx, 1)
+             if status_item:
+                 status_item.setText("翻译中..." if not is_finished else "已翻译")
+        
+        # 3. Auto-follow: Select the row being translated
+        # This triggers on_table_selection_changed -> load_chunk_into_editor
+        # We block signals briefly if we don't want to double-trigger, but here we WANT the trigger
+        # to update the editor view.
+        # However, to avoid fighting with user selection if they are browsing elsewhere,
+        # we might check if the editor is currently "tracking" or just force it.
+        # Given user feedback "it stays on the first", they likely WANT it to follow.
+        
+        # Check if we need to switch view
+        cur_row = self.chunk_table.currentRow()
+        if cur_row != current_idx:
+            self.chunk_table.selectRow(current_idx)
+            # The signal will handle loading text into editor
+        else:
+            # If already selected, just update the text manually because signal might not fire
+            # or if it's partial stream update
+            self.orig_text_edit.setPlainText(orig)
+            self.trans_text_edit.setPlainText(trans)
         
         if is_finished:
             self.status_label.setText(f"总进度: {current_idx+1}/{total} (本块已完成)")
-            # update backup cache ref
-            if hasattr(self, 'flat_chunks'):
-                f_idx, c_idx = self.flat_chunks[current_idx]
-                self.current_indices = (f_idx, c_idx)
         else:
             self.status_label.setText(f"总进度: {current_idx+1}/{total} (正在翻译...)")
 
@@ -461,27 +576,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "没有正在编辑的块。")
             return
             
-        epub_path = self.epub_path_edit.text()
-        cache_file = self.processor.get_cache_filename(epub_path)
+        file_path = self.epub_path_edit.text()
+        cache_file = self.processor.get_cache_filename(file_path)
         cache_data = self.processor.load_cache(cache_file)
         
         if cache_data:
             ch_idx, chunk_idx = self.current_indices
             cache_data["files"][ch_idx]["chunks"][chunk_idx]["trans"] = self.trans_text_edit.toPlainText()
             self.processor.save_cache(cache_file, cache_data)
-            self.status_label.setText(f"已保存逻辑区块 {self.chunk_spin.value()} 的修改。")
+            self.status_label.setText(f"已保存逻辑区块 {ch_idx, chunk_idx} 的修改。")
         else:
             QMessageBox.warning(self, "警告", "未找到缓存文件。")
 
     def clear_cache(self):
-        epub_path = self.epub_path_edit.text()
-        if not epub_path:
-            QMessageBox.warning(self, "警告", "请先选择 EPUB 文件")
+        file_path = self.epub_path_edit.text()
+        if not file_path:
+            QMessageBox.warning(self, "警告", "请先选择文件")
             return
             
         cache_dir = self.cache_path_edit.text()
         proc = Processor(cache_dir)
-        cache_file = proc.get_cache_filename(epub_path)
+        cache_file = proc.get_cache_filename(file_path)
         cache_path = os.path.join(cache_dir, cache_file)
         
         reply = QMessageBox.question(self, '确认清除', '确定要清除当前书籍的翻译缓存吗？这将导致翻译重新开始。',
@@ -491,6 +606,7 @@ class MainWindow(QMainWindow):
             if os.path.exists(cache_path):
                 os.remove(cache_path)
                 QMessageBox.information(self, "成功", "缓存已清除。")
+                self.init_processor_and_chunks() # Refresh table
             else:
                 QMessageBox.information(self, "提示", "未发现现有缓存。")
 
@@ -501,11 +617,15 @@ class MainWindow(QMainWindow):
         self.btn_output.setEnabled(True)
         self.btn_clear_cache.setEnabled(True)
         
+        # Refresh table statuses just in case
+        if hasattr(self, 'processor'):
+             # We could reload cache to verify, but simple UI update is enough usually
+             pass
+        
         if complete:
             self.save_manual_edit()
-            # If it was a single chunk, we don't want to show "all finished"
-            if self.worker and hasattr(self.worker, 'single_idx') and self.worker.single_idx is not None:
-                self.status_label.setText(f"区块 {self.worker.single_idx+1} 翻译完成。")
+            if self.worker and hasattr(self.worker, 'target_indices') and self.worker.target_indices:
+                self.status_label.setText(f"选中块翻译完成。")
             else:
                 self.status_label.setText("全部翻译任务已完成！")
                 QMessageBox.information(self, "完成", "翻译已结束。")
@@ -518,8 +638,8 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "错误", f"发生异常: {message}")
 
     def export_epub(self):
-        epub_path = self.epub_path_edit.text()
-        cache_file = self.processor.get_cache_filename(epub_path)
+        file_path = self.epub_path_edit.text()
+        cache_file = self.processor.get_cache_filename(file_path)
         cache_data = self.processor.load_cache(cache_file)
         
         if not cache_data:
@@ -530,7 +650,7 @@ class MainWindow(QMainWindow):
         if not os.path.exists(output_root):
             os.makedirs(output_root)
             
-        # Step 1: Export Markdowns to cache dir
+        # Step 1: Export Markdowns to cache dir (Unified for both modes)
         md_output_dir = os.path.join(self.cache_path_edit.text(), "markdown_output")
         if not os.path.exists(md_output_dir):
             os.makedirs(md_output_dir)
@@ -543,30 +663,72 @@ class MainWindow(QMainWindow):
                     "file_name": f_data["rel_path"],
                     "translated_content": full_content
                 })
+            
+            # Export raw MDs
             self.converter.export_markdowns(translated_chapters, md_output_dir)
-            self.status_label.setText(f"Markdown 文件已导出。")
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出 Markdown 失败: {e}")
+            QMessageBox.critical(self, "错误", f"导出 Markdown 失敗: {e}")
             return
 
-        # Step 2: Build EPUB via physical replacement
-        output_name = f"translated_{os.path.basename(epub_path)}"
-        output_path = os.path.join(output_root, output_name)
-        working_dir = self.processor.get_working_dir(epub_path)
+        # Step 2: Determine Output Mode
+        out_fmt = self.format_combo.currentText()
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
         
         try:
-            self.status_label.setText("正在执行物理回填...")
-            for f_data in translated_chapters:
-                target_path = os.path.join(working_dir, f_data["file_name"])
-                self.converter.replace_html_content(target_path, f_data["translated_content"])
+            self.status_label.setText("正在导出...")
             
-            self.status_label.setText("正在打包 EPUB...")
-            self.converter.rezip_epub(working_dir, output_path)
-            
-            QMessageBox.information(self, "成功", f"文件已导出至:\n1. MD: {md_output_dir}\n2. EPUB: {output_path}")
+            if self.current_mode == "epub_native":
+                # Only use legacy rezip if specifically strictly required
+                # But logic says: if is_epub_input and is_epub_output_req
+                output_path = os.path.join(output_root, f"translated_{base_name}.epub")
+                working_dir = self.processor.get_working_dir(file_path)
+                
+                self.status_label.setText("正在执行物理回填 (Legacy EPUB)...")
+                for f_data in translated_chapters:
+                    target_path = os.path.join(working_dir, f_data["file_name"])
+                    self.converter.replace_html_content(target_path, f_data["translated_content"])
+                
+                self.status_label.setText("正在打包 EPUB...")
+                self.converter.rezip_epub(working_dir, output_path)
+                final_msg = f"EPUB 已导出至: {output_path}"
+                
+            else:
+                # Pandoc Mode
+                # We need to merge all translated chapters into one MD then convert
+                merged_md_path = os.path.join(md_output_dir, f"{base_name}_merged.md")
+                with open(merged_md_path, 'w', encoding='utf-8') as f:
+                    for ch in translated_chapters:
+                        f.write(ch["translated_content"])
+                        f.write("\n\n")
+                
+                # Determine target extension
+                target_ext = "docx" # default
+                if "DOCX" in out_fmt: target_ext = "docx"
+                elif "EPUB" in out_fmt: target_ext = "epub"
+                elif "Markdown" in out_fmt: target_ext = "md"
+                else: 
+                     # Auto -> match source or default to docx
+                     target_ext = os.path.splitext(file_path)[1].lower().replace('.', '')
+                     if not target_ext: target_ext = "docx"
+
+                output_path = os.path.join(output_root, f"translated_{base_name}.{target_ext}")
+                
+                if target_ext == "md":
+                    shutil.copy(merged_md_path, output_path)
+                else:
+                    self.status_label.setText(f"Pandoc 正在转换为 {target_ext} ...")
+                    success, msg = self.processor.pandoc.convert(merged_md_path, output_path, output_format=target_ext)
+                    if not success:
+                         raise RuntimeError(f"Pandoc Error: {msg}")
+
+                final_msg = f"文件已导出至: {output_path}"
+
+            QMessageBox.information(self, "成功", final_msg)
             self.status_label.setText("导出成功")
+            
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"编译 EPUB 失败: {e}")
+            QMessageBox.critical(self, "错误", f"导出失败: {e}")
+            self.status_label.setText("导出失败")
 
 if __name__ == "__main__":
     app = sys.modules.get('PySide6.QtWidgets').QApplication(sys.argv)

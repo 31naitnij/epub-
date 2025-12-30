@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+from src.core.pandoc_api import PandocAPI
 
 class Processor:
     def __init__(self, cache_dir):
@@ -8,6 +9,7 @@ class Processor:
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
         self.status = "idle" # idle, running, stopped
+        self.pandoc = PandocAPI()
 
     def chunk_text(self, text, max_chars):
         chunks = []
@@ -38,119 +40,232 @@ class Processor:
                 return json.load(f)
         return None
 
-    def get_cache_filename(self, epub_filename):
-        base = os.path.basename(epub_filename)
+    def get_cache_filename(self, input_filename):
+        base = os.path.basename(input_filename)
         return f"{base}_cache.json"
 
-    def get_working_dir(self, epub_filename):
-        base = os.path.basename(epub_filename)
+    def get_working_dir(self, input_filename):
+        base = os.path.basename(input_filename)
         return os.path.join(self.cache_dir, f"{base}_extracted")
 
-    def process_epub(self, epub_path, converter, translator, max_chars, context_rounds=1, callback=None, single_idx=None):
+    # --- Mode 1: Legacy EPUB (Strict structure preservation) ---
+    def process_epub_init(self, epub_path, converter, max_chars):
+        """
+        Initialize cache for EPUB Native mode.
+        """
         cache_file = self.get_cache_filename(epub_path)
         working_dir = self.get_working_dir(epub_path)
         
         cached_data = self.load_cache(cache_file)
         
-        # Initialization
-        if not cached_data:
-            # Step 1: Unzip
-            converter.unzip_epub(epub_path, working_dir)
-            files = converter.find_content_files(working_dir)
-            
-            cached_data = {
-                "epub_path": epub_path,
-                "current_flat_idx": 0,
-                "files": [],
-                "finished": False
-            }
-            
-            for f_rel in files:
-                if converter.should_skip_file(f_rel):
-                    print(f"跳过非正文文件: {f_rel}")
-                    continue
-                    
-                f_abs = os.path.join(working_dir, f_rel)
-                with open(f_abs, 'r', encoding='utf-8') as f_obj:
-                    html_content = f_obj.read()
-                
-                md_content = converter.html_to_markdown(html_content)
-                chunks = self.chunk_text(md_content, max_chars)
-                
-                cached_data["files"].append({
-                    "rel_path": f_rel,
-                    "chunks": [{"orig": c, "trans": ""} for c in chunks],
-                    "finished": False
-                })
-            self.save_cache(cache_file, cached_data)
+        if cached_data and cached_data.get("source_type") == "epub_native":
+            return cached_data
 
-        # Build flat list for progress tracking and navigation
+        # Step 1: Unzip
+        converter.unzip_epub(epub_path, working_dir)
+        files = converter.find_content_files(working_dir)
+        
+        cached_data = {
+            "source_type": "epub_native",
+            "input_path": epub_path,
+            "current_flat_idx": 0,
+            "files": [],
+            "finished": False
+        }
+        
+        for f_rel in files:
+            if converter.should_skip_file(f_rel):
+                continue
+                
+            f_abs = os.path.join(working_dir, f_rel)
+            with open(f_abs, 'r', encoding='utf-8') as f_obj:
+                html_content = f_obj.read()
+            
+            md_content = converter.html_to_markdown(html_content)
+            chunks = self.chunk_text(md_content, max_chars)
+            
+            cached_data["files"].append({
+                "rel_path": f_rel,
+                "chunks": [{"orig": c, "trans": ""} for c in chunks],
+                "finished": False
+            })
+        self.save_cache(cache_file, cached_data)
+        return cached_data
+
+    def process_epub_run(self, epub_path, translator, context_rounds=1, callback=None, target_indices=None):
+        """
+        Original logic for EPUB -> EPUB execution.
+        """
+        cache_file = self.get_cache_filename(epub_path)
+        cached_data = self.load_cache(cache_file)
+        
+        if not cached_data:
+            return False
+
+        # Build flat list
         flat_list = []
         for f_i, f_data in enumerate(cached_data["files"]):
             for c_i, c_data in enumerate(f_data["chunks"]):
                 flat_list.append((f_i, c_i))
 
-        # Main Loop
-        self.status = "running"
-        start_idx = cached_data["current_flat_idx"]
-        
-        history = []
-        
-        # Build initial history if resuming
-        if start_idx > 0:
-            hist_start = max(0, start_idx - context_rounds)
-            for i in range(hist_start, start_idx):
-                pf, pc = flat_list[i]
-                h_chunk = cached_data["files"][pf]["chunks"][pc]
-                history.append((h_chunk["orig"], h_chunk["trans"]))
-
-        if single_idx is not None:
-            loop_range = [single_idx]
-            # If translating a single chunk, we should still try to get context for it
-            history = []
-            hist_start = max(0, single_idx - context_rounds)
-            for i in range(hist_start, single_idx):
-                pf, pc = flat_list[i]
-                h_chunk = cached_data["files"][pf]["chunks"][pc]
-                if h_chunk["trans"]: # Only add if it has been translated
-                    history.append((h_chunk["orig"], h_chunk["trans"]))
+        # Determine loop range
+        if target_indices is not None:
+            # Specific indices selected
+            loop_range = sorted(target_indices)
         else:
+            # Resume from last stop
+            start_idx = cached_data["current_flat_idx"]
             loop_range = range(start_idx, len(flat_list))
 
+        self.status = "running"
+        history = []
+        
+        # Main Loop
         for i in loop_range:
             if self.status != "running":
-                cached_data["current_flat_idx"] = i
+                if target_indices is None:
+                    cached_data["current_flat_idx"] = i 
                 self.save_cache(cache_file, cached_data)
-                return False # Stopped
+                return False 
 
             f_idx, c_idx = flat_list[i]
             file_data = cached_data["files"][f_idx]
             chunk = file_data["chunks"][c_idx]
             
+            # Context builder
+            history = []
+            hist_start = max(0, i - context_rounds)
+            for hi in range(hist_start, i):
+                hf, hc = flat_list[hi]
+                h_chunk = cached_data["files"][hf]["chunks"][hc]
+                if h_chunk["trans"]:
+                    history.append((h_chunk["orig"], h_chunk["trans"]))
+
             # Translate with streaming
             full_translation = ""
             for partial in translator.translate_chunk(chunk["orig"], history):
                 full_translation += partial
                 if callback:
-                    # Send special value to indicate partial update
                     callback(i, len(flat_list), chunk["orig"], full_translation, False)
             
             chunk["trans"] = full_translation
             
-            # Update history
-            history.append((chunk["orig"], full_translation))
-            if len(history) > context_rounds:
-                history.pop(0)
-            
-            # Final callback for this chunk (finished=True)
             if callback:
                 callback(i, len(flat_list), chunk["orig"], full_translation, True)
             
-            # Auto save
-            cached_data["current_flat_idx"] = i + 1
+            if target_indices is None:
+                cached_data["current_flat_idx"] = i + 1
             self.save_cache(cache_file, cached_data)
 
-        cached_data["finished"] = True
+        if target_indices is None:
+            cached_data["finished"] = True
+            self.save_cache(cache_file, cached_data)
+        
+        self.status = "idle"
+        return True
+
+    # --- Mode 2: Pandoc (Generic) ---
+    def process_pandoc_init(self, input_path, max_chars):
+        """
+        Initialize the generic cache by converting Input -> MD via Pandoc.
+        """
+        cache_file = self.get_cache_filename(input_path)
+        cached_data = self.load_cache(cache_file)
+        
+        if cached_data and cached_data.get("source_type") == "pandoc_generic":
+             return cached_data
+
+        # New initialization
+        # 1. Convert to MD
+        temp_md = os.path.join(self.cache_dir, "temp_source.md")
+        success, msg = self.pandoc.convert(input_path, temp_md, "markdown")
+        if not success:
+            raise RuntimeError(f"Pandoc conversion failed: {msg}")
+
+        with open(temp_md, 'r', encoding='utf-8') as f:
+            full_md = f.read()
+
+        # 2. Chunk
+        chunks = self.chunk_text(full_md, max_chars)
+        
+        # 3. Structure (Generic has 1 'file' essentially)
+        cached_data = {
+            "source_type": "pandoc_generic",
+            "input_path": input_path,
+            "current_flat_idx": 0,
+            "files": [
+                {
+                    "rel_path": "merged_document.md",
+                    "chunks": [{"orig": c, "trans": ""} for c in chunks],
+                    "finished": False
+                }
+            ],
+            "finished": False
+        }
         self.save_cache(cache_file, cached_data)
+        return cached_data
+
+    def process_pandoc_run(self, input_path, translator, context_rounds=1, callback=None, target_indices=None):
+        """
+        Run translation loop for generic pandoc mode.
+        """
+        cache_file = self.get_cache_filename(input_path)
+        cached_data = self.load_cache(cache_file)
+        if not cached_data: 
+            return False
+
+        # Build flat list (trivial here, but consistent interface)
+        flat_list = []
+        for f_i, f_data in enumerate(cached_data["files"]):
+            for c_i, c_data in enumerate(f_data["chunks"]):
+                flat_list.append((f_i, c_i))
+
+        if target_indices is not None:
+             loop_range = sorted(target_indices)
+        else:
+            start_idx = cached_data["current_flat_idx"]
+            loop_range = range(start_idx, len(flat_list))
+
+        self.status = "running"
+        
+        for i in loop_range:
+            if self.status != "running":
+                if target_indices is None:
+                    cached_data["current_flat_idx"] = i
+                self.save_cache(cache_file, cached_data)
+                return False
+
+            f_idx, c_idx = flat_list[i]
+            file_data = cached_data["files"][f_idx]
+            chunk = file_data["chunks"][c_idx]
+
+            # Context
+            history = []
+            hist_start = max(0, i - context_rounds)
+            for hi in range(hist_start, i):
+                hf, hc = flat_list[hi]
+                h_chunk = cached_data["files"][hf]["chunks"][hc]
+                if h_chunk["trans"]:
+                    history.append((h_chunk["orig"], h_chunk["trans"]))
+
+            # Translate
+            full_translation = ""
+            for partial in translator.translate_chunk(chunk["orig"], history):
+                full_translation += partial
+                if callback:
+                    callback(i, len(flat_list), chunk["orig"], full_translation, False)
+            
+            chunk["trans"] = full_translation
+            if callback:
+                callback(i, len(flat_list), chunk["orig"], full_translation, True)
+            
+            if target_indices is None:
+                cached_data["current_flat_idx"] = i + 1
+            self.save_cache(cache_file, cached_data)
+
+        if target_indices is None:
+            cached_data["finished"] = True
+            self.save_cache(cache_file, cached_data)
+        
         self.status = "idle"
         return True
