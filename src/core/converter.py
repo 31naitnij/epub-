@@ -85,21 +85,24 @@ class EPUBConverter:
                         continue
                     z.write(full_path, rel_path)
 
-    def replace_html_content(self, html_path, translated_markdown):
+    def replace_html_content(self, html_path, translated_content, is_html=False):
         with open(html_path, 'r', encoding='utf-8') as f:
             soup = BeautifulSoup(f.read(), 'lxml')
         
         body = soup.find('body')
         if not body:
             # Fallback if no body
-            new_html = self.markdown_to_html_fragment(translated_markdown)
+            new_html = translated_content if is_html else self.markdown_to_html_fragment(translated_content)
             with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(new_html)
             return
 
         # Replace body content
-        new_content_html = self.markdown_to_html_fragment(translated_markdown)
-        new_body_soup = BeautifulSoup(new_content_html, 'lxml').find('body') or BeautifulSoup(new_content_html, 'lxml')
+        if is_html:
+            new_body_soup = BeautifulSoup(translated_content, 'lxml').find('body') or BeautifulSoup(translated_content, 'lxml')
+        else:
+            new_content_html = self.markdown_to_html_fragment(translated_content)
+            new_body_soup = BeautifulSoup(new_content_html, 'lxml').find('body') or BeautifulSoup(new_content_html, 'lxml')
         
         body.clear()
         for item in new_body_soup.contents:

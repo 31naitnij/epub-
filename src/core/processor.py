@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 from src.core.pandoc_api import PandocAPI
+from bs4 import BeautifulSoup
 
 class Processor:
     def __init__(self, cache_dir):
@@ -49,7 +50,7 @@ class Processor:
         return os.path.join(self.cache_dir, f"{base}_extracted")
 
     # --- Mode 1: Legacy EPUB (Strict structure preservation) ---
-    def process_epub_init(self, epub_path, converter, max_chars, only_load=False):
+    def process_epub_init(self, epub_path, converter, max_chars, direct_translate=False, only_load=False):
         """
         Initialize cache for EPUB Native mode.
         """
@@ -58,7 +59,9 @@ class Processor:
         
         cached_data = self.load_cache(cache_file)
         
-        if cached_data and cached_data.get("source_type") == "epub_native":
+        # Check if cache matches current mode
+        is_direct = cached_data.get("is_direct_html", False) if cached_data else False
+        if cached_data and cached_data.get("source_type") == "epub_native" and is_direct == direct_translate:
             return cached_data
 
         if only_load:
@@ -70,6 +73,7 @@ class Processor:
         
         cached_data = {
             "source_type": "epub_native",
+            "is_direct_html": direct_translate,
             "input_path": epub_path,
             "current_flat_idx": 0,
             "files": [],
@@ -84,8 +88,20 @@ class Processor:
             with open(f_abs, 'r', encoding='utf-8') as f_obj:
                 html_content = f_obj.read()
             
-            md_content = converter.html_to_markdown(html_content)
-            chunks = self.chunk_text(md_content, max_chars)
+            if direct_translate:
+                # Direct HTML mode: Extract body content or use full content
+                soup = BeautifulSoup(html_content, 'lxml')
+                body = soup.find('body')
+                if body:
+                    # Get inner HTML of body
+                    content_to_chunk = "".join([str(x) for x in body.contents])
+                else:
+                    content_to_chunk = html_content
+            else:
+                # Standard Mode: Convert to MD
+                content_to_chunk = converter.html_to_markdown(html_content)
+
+            chunks = self.chunk_text(content_to_chunk, max_chars)
             
             cached_data["files"].append({
                 "rel_path": f_rel,

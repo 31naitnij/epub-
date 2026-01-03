@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, 
                              QComboBox, QFileDialog, QSplitter, QProgressBar,
                              QMessageBox, QGroupBox, QSpinBox, QDoubleSpinBox,
-                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
+                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QCheckBox)
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QIcon
 import os
@@ -115,6 +115,11 @@ class MainWindow(QMainWindow):
         self.format_combo.addItems(["Auto (EPUB/Pandoc)", "EPUB", "DOCX (A4)", "Markdown"])
         format_layout.addWidget(QLabel("输出格式:"))
         format_layout.addWidget(self.format_combo)
+        
+        self.direct_mode_check = QCheckBox("EPUB直接翻译(不转换格式，带代码分块)")
+        self.direct_mode_check.setToolTip("开启后，EPUB将不转换为Markdown，直接将含有HTML代码的文本发给AI。请在Prompt中要求AI原样保留代码结构。")
+        format_layout.addWidget(self.direct_mode_check)
+        
         format_layout.addStretch()
         path_layout.addLayout(format_layout)
         
@@ -370,7 +375,8 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
             
             if self.current_mode == "epub_native":
-                cache_data = self.processor.process_epub_init(file_path, self.converter, settings['chunk_size'], only_load=autoload)
+                direct_val = self.direct_mode_check.isChecked()
+                cache_data = self.processor.process_epub_init(file_path, self.converter, settings['chunk_size'], direct_translate=direct_val, only_load=autoload)
             else:
                 # Pandoc Mode
                 if not autoload and not self.processor.pandoc.check_availability():
@@ -703,9 +709,10 @@ class MainWindow(QMainWindow):
                 working_dir = self.processor.get_working_dir(file_path)
                 
                 self.status_label.setText("正在执行物理回填 (Legacy EPUB)...")
+                is_direct = cache_data.get("is_direct_html", False)
                 for f_data in translated_chapters:
                     target_path = os.path.join(working_dir, f_data["file_name"])
-                    self.converter.replace_html_content(target_path, f_data["translated_content"])
+                    self.converter.replace_html_content(target_path, f_data["translated_content"], is_html=is_direct)
                 
                 self.status_label.setText("正在打包 EPUB...")
                 self.converter.rezip_epub(working_dir, output_path)
