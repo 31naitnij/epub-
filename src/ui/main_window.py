@@ -32,23 +32,14 @@ class TranslationWorker(QThread):
 
     def run(self):
         try:
-            if self.mode == "epub_native":
-                result = self.processor.process_epub_run(
-                    self.epub_path,
-                    self.translator,
-                    context_rounds=self.context_rounds,
-                    callback=self.progress.emit,
-                    target_indices=self.target_indices
-                )
-            else:
-                 # Pandoc Mode
-                result = self.processor.process_pandoc_run(
-                    self.epub_path,
-                    self.translator,
-                    context_rounds=self.context_rounds,
-                    callback=self.progress.emit,
-                    target_indices=self.target_indices
-                )
+            # Unified process_run for all modes
+            result = self.processor.process_run(
+                self.epub_path,
+                self.translator,
+                context_rounds=self.context_rounds,
+                callback=self.progress.emit,
+                target_indices=self.target_indices
+            )
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
@@ -112,12 +103,12 @@ class MainWindow(QMainWindow):
         # New Output Format Selector
         format_layout = QHBoxLayout()
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["Auto (EPUB/Pandoc)", "EPUB", "DOCX (A4)", "Markdown"])
+        self.format_combo.addItems(["EPUB", "DOCX (A4)", "Markdown"])
         format_layout.addWidget(QLabel("输出格式:"))
         format_layout.addWidget(self.format_combo)
         
-        self.direct_mode_check = QCheckBox("EPUB直接翻译(不转换格式，带代码分块)")
-        self.direct_mode_check.setToolTip("开启后，EPUB将不转换为Markdown，直接将含有HTML代码的文本发给AI。请在Prompt中要求AI原样保留代码结构。")
+        self.direct_mode_check = QCheckBox("原生模式(不转换格式，代码分块翻译)")
+        self.direct_mode_check.setToolTip("开启后，将不转换为Markdown，直接翻译内部文本代码。对EPUB支持HTML翻译，对DOCX支持高保真XML回填。")
         format_layout.addWidget(self.direct_mode_check)
         
         format_layout.addStretch()
@@ -363,28 +354,23 @@ class MainWindow(QMainWindow):
         out_fmt = self.format_combo.currentText()
         
         # Logic: 
-        # If input is EPUB and output is Auto or EPUB -> EPUB Native
-        # Else -> Pandoc Generic
-        is_epub_input = (ext == '.epub')
-        is_epub_output_req = ("EPUB" in out_fmt) or ("Auto" in out_fmt)
-        
-        self.current_mode = "epub_native" if (is_epub_input and is_epub_output_req) else "pandoc_generic"
+        # If output is EPUB or DOCX and Native Mode is checked (or specifically native-friendly) -> Native
+        # But we simplified: use checkbox to decide if user wants "Direct/Native"
+        is_native_requested = self.direct_mode_check.isChecked()
+        self.current_mode = "native" if is_native_requested else "pandoc_generic"
         
         try:
             if not autoload:
                 self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
             
-            if self.current_mode == "epub_native":
+            if self.current_mode == "native":
                 direct_val = self.direct_mode_check.isChecked()
-                cache_data = self.processor.process_epub_init(file_path, self.converter, settings['chunk_size'], direct_translate=direct_val, only_load=autoload)
+                cache_data = self.processor.process_native_init(file_path, settings['chunk_size'], is_direct=direct_val, only_load=autoload)
             else:
-                # Pandoc Mode
+                # Pandoc Mode (Generic Markdown process)
                 if not autoload and not self.processor.pandoc.check_availability():
                    QMessageBox.critical(self, "错误", "未检测到 Pandoc，无法执行此格式转换。请安装 Pandoc。")
                    return False
-                # If autoloading and no pandoc, wait, process_pandoc_init doesn't use pandoc if only_load=True/cache exists
-                # But logical check is safer. The processor logic handles "only_load -> return None if no cache".
-                # If cache exists, it returns it instantly no matter if pandoc installed (assuming simple read).
                 cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'], only_load=autoload)
             
             if cache_data is None:
@@ -667,6 +653,11 @@ class MainWindow(QMainWindow):
         cache_file = self.processor.get_cache_filename(file_path)
         cache_data = self.processor.load_cache(cache_file)
         
+    def export_epub(self): # Keeping name for signal compatibility if any, but logic is generic
+        file_path = self.epub_path_edit.text()
+        cache_file = self.processor.get_cache_filename(file_path)
+        cache_data = self.processor.load_cache(cache_file)
+        
         if not cache_data:
             QMessageBox.warning(self, "警告", "未找到翻译缓存。")
             return
@@ -675,12 +666,14 @@ class MainWindow(QMainWindow):
         if not os.path.exists(output_root):
             os.makedirs(output_root)
             
-        # Step 1: Export Markdowns to cache dir (Unified for both modes)
-        md_output_dir = os.path.join(self.cache_path_edit.text(), "markdown_output")
-        if not os.path.exists(md_output_dir):
-            os.makedirs(md_output_dir)
-            
+        out_fmt = self.format_combo.currentText()
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        ext = os.path.splitext(file_path)[1].lower()
+
         try:
+            self.status_label.setText("正在准备导出...")
+            
+            # 1. Gather translated content
             translated_chapters = []
             for f_data in cache_data["files"]:
                 full_content = "\n\n".join([c["trans"] for c in f_data["chunks"]])
@@ -688,66 +681,87 @@ class MainWindow(QMainWindow):
                     "file_name": f_data["rel_path"],
                     "translated_content": full_content
                 })
-            
-            # Export raw MDs
-            self.converter.export_markdowns(translated_chapters, md_output_dir)
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出 Markdown 失敗: {e}")
-            return
 
-        # Step 2: Determine Output Mode
-        out_fmt = self.format_combo.currentText()
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        
-        try:
-            self.status_label.setText("正在导出...")
-            
-            if self.current_mode == "epub_native":
-                # Only use legacy rezip if specifically strictly required
-                # But logic says: if is_epub_input and is_epub_output_req
-                output_path = os.path.join(output_root, f"translated_{base_name}.epub")
-                working_dir = self.processor.get_working_dir(file_path)
-                
-                self.status_label.setText("正在执行物理回填 (Legacy EPUB)...")
-                is_direct = cache_data.get("is_direct_html", False)
-                for f_data in translated_chapters:
-                    target_path = os.path.join(working_dir, f_data["file_name"])
-                    self.converter.replace_html_content(target_path, f_data["translated_content"], is_html=is_direct)
-                
-                self.status_label.setText("正在打包 EPUB...")
-                self.converter.rezip_epub(working_dir, output_path)
-                final_msg = f"EPUB 已导出至: {output_path}"
-                
+            if self.current_mode == "native":
+                # --- NATIVE MODE (Format Preservation) ---
+                if ext == '.epub':
+                    output_path = os.path.join(output_root, f"translated_{base_name}.epub")
+                    working_dir = self.processor.get_working_dir(file_path)
+                    
+                    self.status_label.setText("正在执行 HTML 回填...")
+                    for f_data in translated_chapters:
+                        target_path = os.path.join(working_dir, f_data["file_name"])
+                        # EPUB Native uses BeautifulSoup for surgery
+                        self.processor.epub_converter.replace_html_content(target_path, f_data["translated_content"], is_html=True)
+                    
+                    self.status_label.setText("正在打包 EPUB...")
+                    self.processor.epub_converter.rezip_epub(working_dir, output_path)
+                    final_msg = f"原生 EPUB 已导出至: {output_path}"
+
+                elif ext == '.docx':
+                    output_path = os.path.join(output_root, f"translated_{base_name}.docx")
+                    working_dir = self.processor.get_working_dir(file_path)
+                    
+                    self.status_label.setText("正在执行 XML 外科手术式回填...")
+                    # 1. Create a temporary translated DOCX from the intermediate HTML
+                    temp_translated_docx = os.path.join(self.cache_path_edit.text(), "temp_translated_full.docx")
+                    # We use the virtual rel_path content
+                    content_html = translated_chapters[0]["translated_content"]
+                    temp_html_path = os.path.join(self.cache_path_edit.text(), "temp_translated.html")
+                    with open(temp_html_path, 'w', encoding='utf-8') as f:
+                        f.write(content_html)
+                    
+                    # Convert HTML to temp DOCX using original as reference for styles
+                    success, msg = self.processor.docx_converter.convert_html_to_docx(temp_html_path, temp_translated_docx, reference_docx=file_path)
+                    if not success: raise RuntimeError(f"HTML to DOCX conversion failed: {msg}")
+
+                    # 2. Extract key XMLs from temp_translated_docx and overwrite in original working_dir
+                    self.status_label.setText("正在回填 XML 核心文件...")
+                    dest_working_dir = working_dir
+                    
+                    # Safety check: ensure original extracted dir exists
+                    if not os.path.exists(dest_working_dir):
+                        self.processor.docx_converter.unzip_docx(file_path, dest_working_dir)
+                    
+                    # We extract document.xml from the pandoc-generated docx and put it in the pure-unzipped dir
+                    self.processor.docx_converter.extract_xml_from_docx(temp_translated_docx, "word/document.xml", os.path.join(dest_working_dir, "word", "document.xml"))
+                    
+                    # 3. Rezip original dir
+                    self.status_label.setText("正在重新打包 DOCX...")
+                    self.processor.docx_converter.rezip_docx(dest_working_dir, output_path)
+                    final_msg = f"原生 DOCX (格式完全保留) 已导出至: {output_path}"
+                else:
+                    raise ValueError(f"原生模式不支持格式: {ext}")
+
             else:
-                # Pandoc Mode
-                # We need to merge all translated chapters into one MD then convert
+                # --- PANDOC GENERIC MODE (Format Conversion) ---
+                self.status_label.setText("正在执行 Pandoc 通用导出...")
+                # Merge chapters into one MD
+                md_output_dir = os.path.join(self.cache_path_edit.text(), "markdown_output")
+                if not os.path.exists(md_output_dir): os.makedirs(md_output_dir)
                 merged_md_path = os.path.join(md_output_dir, f"{base_name}_merged.md")
                 with open(merged_md_path, 'w', encoding='utf-8') as f:
                     for ch in translated_chapters:
                         f.write(ch["translated_content"])
                         f.write("\n\n")
-                
+
                 # Determine target extension
-                target_ext = "docx" # default
+                target_ext = "docx"
                 if "DOCX" in out_fmt: target_ext = "docx"
                 elif "EPUB" in out_fmt: target_ext = "epub"
                 elif "Markdown" in out_fmt: target_ext = "md"
-                else: 
-                     # Auto -> match source or default to docx
-                     target_ext = os.path.splitext(file_path)[1].lower().replace('.', '')
-                     if not target_ext: target_ext = "docx"
+                else: target_ext = ext.replace('.', '') or "docx"
 
                 output_path = os.path.join(output_root, f"translated_{base_name}.{target_ext}")
                 
                 if target_ext == "md":
                     shutil.copy(merged_md_path, output_path)
                 else:
-                    self.status_label.setText(f"Pandoc 正在转换为 {target_ext} ...")
+                    self.status_label.setText(f"Pandoc 正在生成 {target_ext}...")
                     success, msg = self.processor.pandoc.convert(merged_md_path, output_path, output_format=target_ext)
-                    if not success:
-                         raise RuntimeError(f"Pandoc Error: {msg}")
+                    if not success: raise RuntimeError(f"Pandoc Error: {msg}")
 
-                final_msg = f"文件已导出至: {output_path}"
+                final_msg = f"转换文件已导出至: {output_path}"
 
             QMessageBox.information(self, "成功", final_msg)
             self.status_label.setText("导出成功")
