@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         path_layout.addLayout(epub_layout)
 
         cache_layout = QHBoxLayout()
-        self.cache_path_edit = QLineEdit(os.path.join(os.getcwd(), "cache"))
+        self.cache_path_edit = QLineEdit(r"E:\Downloads\transcache")
         btn_browse_cache = QPushButton("选择文件夹")
         btn_browse_cache.clicked.connect(self.browse_cache)
         cache_layout.addWidget(QLabel("缓存目录:"))
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         path_layout.addLayout(cache_layout)
 
         output_layout = QHBoxLayout()
-        self.output_path_edit = QLineEdit(os.path.join(os.getcwd(), "output"))
+        self.output_path_edit = QLineEdit(r"E:\Downloads\transoutput")
         btn_browse_output = QPushButton("选择文件夹")
         btn_browse_output.clicked.connect(self.browse_output)
         output_layout.addWidget(QLabel("输出目录:"))
@@ -650,11 +650,10 @@ class MainWindow(QMainWindow):
 
     def export_epub(self):
         file_path = self.epub_path_edit.text()
-        cache_file = self.processor.get_cache_filename(file_path)
-        cache_data = self.processor.load_cache(cache_file)
-        
-    def export_epub(self): # Keeping name for signal compatibility if any, but logic is generic
-        file_path = self.epub_path_edit.text()
+        if not self.processor:
+            QMessageBox.warning(self, "警告", "请先初始化并翻译文件。")
+            return
+
         cache_file = self.processor.get_cache_filename(file_path)
         cache_data = self.processor.load_cache(cache_file)
         
@@ -666,109 +665,29 @@ class MainWindow(QMainWindow):
         if not os.path.exists(output_root):
             os.makedirs(output_root)
             
-        out_fmt = self.format_combo.currentText()
+        out_fmt_str = self.format_combo.currentText()
+        # Map UI string to format
+        target_format = "docx"
+        if "DOCX" in out_fmt_str: target_format = "docx"
+        elif "EPUB" in out_fmt_str: target_format = "epub"
+        elif "Markdown" in out_fmt_str: target_format = "md"
+
         base_name = os.path.splitext(os.path.basename(file_path))[0]
-        ext = os.path.splitext(file_path)[1].lower()
+        output_path = os.path.join(output_root, f"translated_{base_name}.{target_format}")
 
         try:
-            self.status_label.setText("正在准备导出...")
+            self.status_label.setText("正在导出...")
+            msg = self.processor.finalize_translation(file_path, output_path, target_format)
             
-            # 1. Gather translated content
-            translated_chapters = []
-            for f_data in cache_data["files"]:
-                full_content = "\n\n".join([c["trans"] for c in f_data["chunks"]])
-                translated_chapters.append({
-                    "file_name": f_data["rel_path"],
-                    "translated_content": full_content
-                })
-
-            if self.current_mode == "native":
-                # --- NATIVE MODE (Format Preservation) ---
-                if ext == '.epub':
-                    output_path = os.path.join(output_root, f"translated_{base_name}.epub")
-                    working_dir = self.processor.get_working_dir(file_path)
-                    
-                    self.status_label.setText("正在执行 HTML 回填...")
-                    for f_data in translated_chapters:
-                        target_path = os.path.join(working_dir, f_data["file_name"])
-                        # EPUB Native uses BeautifulSoup for surgery
-                        self.processor.epub_converter.replace_html_content(target_path, f_data["translated_content"], is_html=True)
-                    
-                    self.status_label.setText("正在打包 EPUB...")
-                    self.processor.epub_converter.rezip_epub(working_dir, output_path)
-                    final_msg = f"原生 EPUB 已导出至: {output_path}"
-
-                elif ext == '.docx':
-                    output_path = os.path.join(output_root, f"translated_{base_name}.docx")
-                    working_dir = self.processor.get_working_dir(file_path)
-                    
-                    self.status_label.setText("正在执行 XML 外科手术式回填...")
-                    # 1. Create a temporary translated DOCX from the intermediate HTML
-                    temp_translated_docx = os.path.join(self.cache_path_edit.text(), "temp_translated_full.docx")
-                    # We use the virtual rel_path content
-                    content_html = translated_chapters[0]["translated_content"]
-                    temp_html_path = os.path.join(self.cache_path_edit.text(), "temp_translated.html")
-                    with open(temp_html_path, 'w', encoding='utf-8') as f:
-                        f.write(content_html)
-                    
-                    # Convert HTML to temp DOCX using original as reference for styles
-                    success, msg = self.processor.docx_converter.convert_html_to_docx(temp_html_path, temp_translated_docx, reference_docx=file_path)
-                    if not success: raise RuntimeError(f"HTML to DOCX conversion failed: {msg}")
-
-                    # 2. Extract key XMLs from temp_translated_docx and overwrite in original working_dir
-                    self.status_label.setText("正在回填 XML 核心文件...")
-                    dest_working_dir = working_dir
-                    
-                    # Safety check: ensure original extracted dir exists
-                    if not os.path.exists(dest_working_dir):
-                        self.processor.docx_converter.unzip_docx(file_path, dest_working_dir)
-                    
-                    # We extract document.xml from the pandoc-generated docx and put it in the pure-unzipped dir
-                    self.processor.docx_converter.extract_xml_from_docx(temp_translated_docx, "word/document.xml", os.path.join(dest_working_dir, "word", "document.xml"))
-                    
-                    # 3. Rezip original dir
-                    self.status_label.setText("正在重新打包 DOCX...")
-                    self.processor.docx_converter.rezip_docx(dest_working_dir, output_path)
-                    final_msg = f"原生 DOCX (格式完全保留) 已导出至: {output_path}"
-                else:
-                    raise ValueError(f"原生模式不支持格式: {ext}")
-
-            else:
-                # --- PANDOC GENERIC MODE (Format Conversion) ---
-                self.status_label.setText("正在执行 Pandoc 通用导出...")
-                # Merge chapters into one MD
-                md_output_dir = os.path.join(self.cache_path_edit.text(), "markdown_output")
-                if not os.path.exists(md_output_dir): os.makedirs(md_output_dir)
-                merged_md_path = os.path.join(md_output_dir, f"{base_name}_merged.md")
-                with open(merged_md_path, 'w', encoding='utf-8') as f:
-                    for ch in translated_chapters:
-                        f.write(ch["translated_content"])
-                        f.write("\n\n")
-
-                # Determine target extension
-                target_ext = "docx"
-                if "DOCX" in out_fmt: target_ext = "docx"
-                elif "EPUB" in out_fmt: target_ext = "epub"
-                elif "Markdown" in out_fmt: target_ext = "md"
-                else: target_ext = ext.replace('.', '') or "docx"
-
-                output_path = os.path.join(output_root, f"translated_{base_name}.{target_ext}")
-                
-                if target_ext == "md":
-                    shutil.copy(merged_md_path, output_path)
-                else:
-                    self.status_label.setText(f"Pandoc 正在生成 {target_ext}...")
-                    success, msg = self.processor.pandoc.convert(merged_md_path, output_path, output_format=target_ext)
-                    if not success: raise RuntimeError(f"Pandoc Error: {msg}")
-
-                final_msg = f"转换文件已导出至: {output_path}"
-
-            QMessageBox.information(self, "成功", final_msg)
             self.status_label.setText("导出成功")
+            QMessageBox.information(self, "成功", f"导出完成！\n{msg}")
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "错误", f"导出失败: {e}")
             self.status_label.setText("导出失败")
+            
 
 if __name__ == "__main__":
     app = sys.modules.get('PySide6.QtWidgets').QApplication(sys.argv)

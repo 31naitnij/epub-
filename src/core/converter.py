@@ -13,9 +13,8 @@ class EPUBConverter:
         self.pandoc = pandoc or PandocAPI()
 
     def unzip_epub(self, epub_path, extract_to):
-        if os.path.exists(extract_to):
-            shutil.rmtree(extract_to)
-        os.makedirs(extract_to)
+        if not os.path.exists(extract_to):
+            os.makedirs(extract_to)
         with zipfile.ZipFile(epub_path, 'r') as zip_ref:
             zip_ref.extractall(extract_to)
 
@@ -29,11 +28,11 @@ class EPUBConverter:
         return False
 
     def find_content_files(self, extract_to):
-        # Scan for HTML/XHTML files
+        # Scan for HTML/XHTML/XML files
         content_files = []
         for root, dirs, files in os.walk(extract_to):
             for file in files:
-                if file.lower().endswith(('.html', '.xhtml', '.htm')):
+                if file.lower().endswith(('.html', '.xhtml', '.htm', '.xml')):
                     rel_path = os.path.relpath(os.path.join(root, file), extract_to)
                     content_files.append(rel_path)
         return content_files
@@ -112,9 +111,8 @@ class DOCXConverter:
         self.pandoc = pandoc or PandocAPI()
 
     def unzip_docx(self, docx_path, extract_to):
-        if os.path.exists(extract_to):
-            shutil.rmtree(extract_to)
-        os.makedirs(extract_to)
+        if not os.path.exists(extract_to):
+            os.makedirs(extract_to)
         with zipfile.ZipFile(docx_path, 'r') as zip_ref:
             zip_ref.extractall(extract_to)
 
