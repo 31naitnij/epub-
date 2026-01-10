@@ -20,7 +20,7 @@ class EPUBConverter:
 
     def should_skip_file(self, rel_path):
         """Identify if a file should be skipped for translation (e.g., titlepage, cover)."""
-        skip_keywords = ['titlepage', 'title_page', 'cover', 'copyright', 'nav', 'toc', 'jacket']
+        skip_keywords = ['titlepage', 'title_page', 'cover', 'copyright', 'nav', 'toc', 'jacket', 'container']
         filename = os.path.basename(rel_path).lower()
         for kw in skip_keywords:
             if kw in filename:
