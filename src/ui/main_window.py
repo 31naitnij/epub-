@@ -19,7 +19,7 @@ class TranslationWorker(QThread):
     finished = Signal(bool)
     error = Signal(str)
 
-    def __init__(self, processor, converter, translator, epub_path, max_chars, context_rounds=1, target_indices=None, mode="epub_native"):
+    def __init__(self, processor, converter, translator, epub_path, max_chars, context_rounds=1, target_indices=None):
         super().__init__()
         self.processor = processor
         self.converter = converter
@@ -28,7 +28,6 @@ class TranslationWorker(QThread):
         self.max_chars = max_chars
         self.context_rounds = context_rounds
         self.target_indices = target_indices
-        self.mode = mode
 
     def run(self):
         try:
@@ -106,10 +105,6 @@ class MainWindow(QMainWindow):
         self.format_combo.addItems(["EPUB", "DOCX (A4)", "Markdown"])
         format_layout.addWidget(QLabel("输出格式:"))
         format_layout.addWidget(self.format_combo)
-        
-        self.direct_mode_check = QCheckBox("原生模式(不转换格式，代码分块翻译)")
-        self.direct_mode_check.setToolTip("开启后，将不转换为Markdown，直接翻译内部文本代码。对EPUB支持HTML翻译，对DOCX支持高保真XML回填。")
-        format_layout.addWidget(self.direct_mode_check)
         
         format_layout.addStretch()
         path_layout.addLayout(format_layout)
@@ -350,28 +345,17 @@ class MainWindow(QMainWindow):
         self.processor = Processor(cache_dir)
         
         # Decide mode
-        ext = os.path.splitext(file_path)[1].lower()
-        out_fmt = self.format_combo.currentText()
-        
-        # Logic: 
-        # If output is EPUB or DOCX and Native Mode is checked (or specifically native-friendly) -> Native
-        # But we simplified: use checkbox to decide if user wants "Direct/Native"
-        is_native_requested = self.direct_mode_check.isChecked()
-        self.current_mode = "native" if is_native_requested else "pandoc_generic"
+        # Always use Pandoc Mode (Generic Markdown process) as Native Mode is removed
+        self.current_mode = "pandoc_generic"
         
         try:
             if not autoload:
                 self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
             
-            if self.current_mode == "native":
-                direct_val = self.direct_mode_check.isChecked()
-                cache_data = self.processor.process_native_init(file_path, settings['chunk_size'], is_direct=direct_val, only_load=autoload)
-            else:
-                # Pandoc Mode (Generic Markdown process)
-                if not autoload and not self.processor.pandoc.check_availability():
-                   QMessageBox.critical(self, "错误", "未检测到 Pandoc，无法执行此格式转换。请安装 Pandoc。")
-                   return False
-                cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'], only_load=autoload)
+            if not autoload and not self.processor.pandoc.check_availability():
+               QMessageBox.critical(self, "错误", "未检测到 Pandoc，无法执行此格式转换。请安装 Pandoc。")
+               return False
+            cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'], only_load=autoload)
             
             if cache_data is None:
                 if autoload: return False
@@ -487,7 +471,6 @@ class MainWindow(QMainWindow):
             settings['chunk_size'],
             context_rounds=settings['context_rounds'],
             target_indices=rows, # Pass list of flat indices
-            mode=self.current_mode
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
@@ -528,8 +511,7 @@ class MainWindow(QMainWindow):
             translator, 
             file_path,
             settings['chunk_size'],
-            context_rounds=settings['context_rounds'],
-            mode=self.current_mode
+            context_rounds=settings['context_rounds']
             # No target_indices = Process ALL from Resume point
         )
         self.worker.progress.connect(self.on_progress)
@@ -668,12 +650,19 @@ class MainWindow(QMainWindow):
         out_fmt_str = self.format_combo.currentText()
         # Map UI string to format
         target_format = "docx"
-        if "DOCX" in out_fmt_str: target_format = "docx"
-        elif "EPUB" in out_fmt_str: target_format = "epub"
-        elif "Markdown" in out_fmt_str: target_format = "md"
+        file_ext = "docx"
+        if "DOCX" in out_fmt_str: 
+            target_format = "docx"
+            file_ext = "docx"
+        elif "EPUB" in out_fmt_str: 
+            target_format = "epub"
+            file_ext = "epub"
+        elif "Markdown" in out_fmt_str: 
+            target_format = "markdown"
+            file_ext = "md"
 
         base_name = os.path.splitext(os.path.basename(file_path))[0]
-        output_path = os.path.join(output_root, f"translated_{base_name}.{target_format}")
+        output_path = os.path.join(output_root, f"translated_{base_name}.{file_ext}")
 
         try:
             self.status_label.setText("正在导出...")

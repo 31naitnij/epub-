@@ -37,14 +37,14 @@ class EPUBConverter:
                     content_files.append(rel_path)
         return content_files
 
-    def html_to_markdown(self, html_content):
+    def html_to_markdown(self, html_content, keep_tables_html=True):
         # Clean HTML first (optional, but Pandoc handles most stuff well)
         soup = BeautifulSoup(html_content, 'lxml')
         for tag in soup(['head', 'style', 'script', 'meta', 'link']):
             tag.decompose()
         
         target = soup.find('body') or soup
-        return self.pandoc.html_to_markdown(str(target)).strip()
+        return self.pandoc.html_to_markdown(str(target), keep_tables_html=keep_tables_html).strip()
 
     def markdown_to_html_fragment(self, markdown_content):
         return self.pandoc.markdown_to_html(markdown_content)

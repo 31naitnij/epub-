@@ -39,4 +39,18 @@ Thumbs.db
 # --- 编译临时目录 ---
 build/
 dist/
-*.spec
+
+# --- 临时脚本与测试文件 ---
+test_*.py
+verify_*.py
+reproduce_*.py
+simulate_*.py
+check_ast.py
+check_xml/
+final_output.docx
+inter.html
+out_styled.docx
+ref.docx
+test_table_gen.docx
+debug_*.py
+test_cache/

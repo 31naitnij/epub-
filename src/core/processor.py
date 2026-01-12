@@ -74,9 +74,9 @@ class Processor:
 
     def process_native_init(self, input_path, max_chars, is_direct=True, only_load=False):
         """
-        Combined logic for EPUB/DOCX Native Mode (Direct BeautifulSoup translation).
+        DEPRECATED: Native Mode is removed. Redirects to standard container processing.
         """
-        return self._init_container_processing(input_path, max_chars, is_direct=is_direct, source_type="native", only_load=only_load)
+        return self._init_container_processing(input_path, max_chars, source_type="native", only_load=only_load)
 
     def process_pandoc_init(self, input_path, max_chars, only_load=False):
         """
@@ -85,7 +85,7 @@ class Processor:
         """
         ext = os.path.splitext(input_path)[1].lower()
         if ext in ['.epub', '.docx']:
-             return self._init_container_processing(input_path, max_chars, is_direct=False, source_type="pandoc_per_file", only_load=only_load)
+             return self._init_container_processing(input_path, max_chars, source_type="pandoc_per_file", only_load=only_load)
         
         # Original merged path for non-containers
         cache_file = self.get_cache_filename(input_path)
@@ -126,26 +126,24 @@ class Processor:
         self.save_cache(cache_file, cached_data)
         return cached_data
 
-    def _init_container_processing(self, input_path, max_chars, is_direct=True, source_type="native", only_load=False):
+    def _init_container_processing(self, input_path, max_chars, source_type="native", only_load=False):
         ext = os.path.splitext(input_path)[1].lower()
         cache_file = self.get_cache_filename(input_path)
         working_dir = self.get_working_dir(input_path)
         
         cached_data = self.load_cache(cache_file)
         
-        # If it's the old merged format, we DON'T overwrite it here, allowing user to still export via Pandoc conversion.
-        # But if user clicks 'Start' on a new container, they likely want the new per-file behavior.
-        # To balance safety and utility: only reload if it's already a per-file format or if strictly loading.
+        # Reload if exists
         if cached_data:
             if cached_data.get("source_type") in ["native", "pandoc_per_file"]:
-                # If folder is missing, re-extract but keep translation data
+                # If folder is missing, re-extract
                 if not os.path.exists(working_dir):
                     if ext == '.epub':
                         self.epub_converter.unzip_epub(input_path, working_dir)
                     elif ext == '.docx':
                         self.docx_converter.unzip_docx(input_path, working_dir)
                 
-                # Migrate old cache (add missing fields)
+                # Migrate checks
                 needs_save = False
                 if "input_ext" not in cached_data:
                     cached_data["input_ext"] = ext
@@ -170,9 +168,10 @@ class Processor:
         elif ext == '.docx':
             self.docx_converter.unzip_docx(input_path, working_dir)
 
+        # Standardizing on "native" source_type but implementation is now Markdown-based with table preservation
         cached_data = {
             "source_type": source_type,
-            "is_direct": is_direct,
+            "is_direct": False, # Always False now -> pure Markdown flow
             "input_path": input_path,
             "input_ext": ext,
             "working_dir": working_dir,
@@ -190,12 +189,8 @@ class Processor:
                 with open(f_abs, 'r', encoding='utf-8') as f_obj:
                     html_content = f_obj.read()
                 
-                if is_direct:
-                    soup = BeautifulSoup(html_content, 'lxml')
-                    body = soup.find('body')
-                    content_to_chunk = "".join([str(x) for x in body.contents]) if body else html_content
-                else:
-                    content_to_chunk = self.epub_converter.html_to_markdown(html_content)
+                # Always convert to Markdown, preserving HTML tables
+                content_to_chunk = self.epub_converter.html_to_markdown(html_content, keep_tables_html=True)
 
                 chunks = self.chunk_text(content_to_chunk, max_chars)
                 cached_data["files"].append({
@@ -205,7 +200,7 @@ class Processor:
                 })
 
         elif ext == '.docx':
-            # Intermediate HTML for translation
+            # Intermediate HTML -> Markdown (preserving tables)
             intermediate_html = os.path.join(self.cache_dir, f"{os.path.basename(input_path)}_intermediate.html")
             success, msg = self.docx_converter.convert_docx_to_html(input_path, intermediate_html)
             if not success:
@@ -214,13 +209,13 @@ class Processor:
             with open(intermediate_html, 'r', encoding='utf-8') as f:
                 html_content = f.read()
 
-            soup = BeautifulSoup(html_content, 'lxml')
-            body = soup.find('body')
-            content_to_chunk = "".join([str(x) for x in body.contents]) if body else html_content
+            # Convert intermediate HTML to Markdown, preserving tables
+            content_to_chunk = self.pandoc.html_to_markdown(html_content, keep_tables_html=True)
 
             chunks = self.chunk_text(content_to_chunk, max_chars)
+            # Use 'document_content.md' to signify it's the markdown version
             cached_data["files"].append({
-                "rel_path": "document_content.html",
+                "rel_path": "document_content.md",
                 "chunks": [{"orig": c, "trans": ""} for c in chunks],
                 "finished": False
             })
@@ -326,7 +321,8 @@ class Processor:
                 if not working_dir or not os.path.exists(working_dir):
                     self.epub_converter.unzip_epub(input_path, working_dir)
                 
-                is_direct = cache_data.get("is_direct", True)
+                # is_direct is False now (Markdown everywhere)
+                is_direct = False 
                 replaced_count = 0
                 for tf in translated_files:
                     if tf["rel_path"] == "merged_document.md":
@@ -334,7 +330,8 @@ class Processor:
                          
                     target_file_path = os.path.join(working_dir, tf["rel_path"])
                     if os.path.exists(target_file_path):
-                         self.epub_converter.replace_html_content(target_file_path, tf["content"], is_html=is_direct)
+                         # REPLACE MD -> HTML FRAGMENT
+                         self.epub_converter.replace_html_content(target_file_path, tf["content"], is_html=False)
                          replaced_count += 1
 
                 if replaced_count > 0:
@@ -347,13 +344,20 @@ class Processor:
                 if not working_dir or not os.path.exists(working_dir):
                     self.docx_converter.unzip_docx(input_path, working_dir)
                 
-                # Check if we have the virtual content file
-                doc_content = next((tf["content"] for tf in translated_files if tf["rel_path"] == "document_content.html"), None)
+                # Check if we have the virtual content file (old .html or new .md)
+                doc_content = next((tf["content"] for tf in translated_files if tf["rel_path"] in ["document_content.html", "document_content.md"]), None)
+                
                 if doc_content:
-                    # DOCX Surgical replacement
+                    # DOCX Surgical replacement via HTML
+                    # First confirm if content is MD or HTML. If we see document_content.md, it's MD.
+                    # We always treat it as MD now for new process.
+                    
+                    # Convert MD -> HTML
+                    doc_content_html = self.pandoc.markdown_to_html(doc_content)
+                    
                     temp_html = os.path.join(self.cache_dir, "temp_final.html")
                     with open(temp_html, 'w', encoding='utf-8') as f:
-                        f.write(doc_content)
+                        f.write(doc_content_html)
                     
                     temp_translated_docx = os.path.join(self.cache_dir, "temp_translated.docx")
                     self.docx_converter.convert_html_to_docx(temp_html, temp_translated_docx, reference_docx=input_path)
@@ -368,7 +372,7 @@ class Processor:
 
         # Fallback to Pandoc Conversion for all other cases
         # Merge all content to a single MD/HTML for Pandoc
-        is_html = (source_type == "native" or cache_data.get("is_direct", True))
+        is_html = False # Always markdown now for output generation from chunks
         merged_content = "\n\n".join([tf["content"] for tf in translated_files])
         
         temp_source = os.path.join(self.cache_dir, "temp_ready." + ("html" if is_html else "md"))

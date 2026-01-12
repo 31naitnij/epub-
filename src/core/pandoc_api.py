@@ -54,9 +54,21 @@ class PandocAPI:
         except subprocess.CalledProcessError as e:
             return False, e.stderr
 
-    def html_to_markdown(self, html_content):
+    def html_to_markdown(self, html_content, keep_tables_html=False):
         """Convert HTML string to Markdown string using Pandoc."""
-        return self._convert_string(html_content, "html", "markdown")
+        to_fmt = "markdown"
+        if keep_tables_html:
+            # Disable table extensions to force Pandoc to keep tables as raw HTML
+            to_fmt = "markdown-grid_tables-simple_tables-multiline_tables-pipe_tables"
+            
+        result = self._convert_string(html_content, "html", to_fmt)
+        
+        # Patch: Fix Pandoc failing to parse shortcut syntax for classes starting with _, e.g. [text]{._Bold}
+        # We convert {._Bold} -> {class="_Bold"} which Pandoc handles correctly.
+        import re
+        result = re.sub(r'\{\.(\_[\w-]+)\}', r'{class="\1"}', result)
+        
+        return result.strip()
 
     def markdown_to_html(self, md_content):
         """Convert Markdown string to HTML string using Pandoc."""
