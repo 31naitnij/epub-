@@ -18,42 +18,68 @@ class Processor:
     def chunk_text(self, text, max_chars):
         """
         Atomic Chunking: 
-        1. Protects <table>...</table> blocks as independent, atomic chunks.
-        2. Splits remaining text by paragraph/block boundaries (Markdown \n\n or HTML closing tags).
-        Ensures that paragraphs/tables are NEVER split.
+        1. Protects <table>...</table> blocks (including nested ones) as atomic chunks.
+        2. Splits remaining text by paragraph/block boundaries.
         """
         import re
         
-        # Phase 1: Identify and isolate <table> blocks
-        # Use DOTALL to match across lines
-        table_pattern = r'(<table.*?>.*?</table>)'
-        
         parts = []
         last_pos = 0
-        for m in re.finditer(table_pattern, text, re.DOTALL | re.IGNORECASE):
-            # Text before table
-            if m.start() > last_pos:
-                parts.append({"type": "text", "content": text[last_pos:m.start()]})
-            # The table itself
-            parts.append({"type": "table", "content": m.group(1)})
-            last_pos = m.end()
         
+        # Use finditer to find all potential table starts
+        # We search manually to handle nesting
+        pos = 0
+        while pos < len(text):
+            # Find next table start
+            match = re.search(r'<table.*?>', text[pos:], re.IGNORECASE | re.DOTALL)
+            if not match:
+                break
+            
+            start_idx = pos + match.start()
+            
+            # Found a start, now find the matching end
+            # We count nesting levels
+            level = 1
+            search_pos = pos + match.end()
+            end_idx = -1
+            
+            # Regex to find either a start or end tag
+            tag_pattern = re.compile(r'<(/?table.*?)>', re.IGNORECASE | re.DOTALL)
+            
+            for m in tag_pattern.finditer(text, search_pos):
+                tag_content = m.group(1).lower()
+                if tag_content.startswith('table'):
+                    level += 1
+                elif tag_content.startswith('/table'):
+                    level -= 1
+                
+                if level == 0:
+                    end_idx = m.end()
+                    break
+            
+            if end_idx != -1:
+                # We found a complete outermost table
+                if start_idx > last_pos:
+                    parts.append({"type": "text", "content": text[last_pos:start_idx]})
+                parts.append({"type": "table", "content": text[start_idx:end_idx]})
+                last_pos = end_idx
+                pos = end_idx
+            else:
+                # If no matching end found, treat as text and move on
+                pos = search_pos
+
         if last_pos < len(text):
             parts.append({"type": "text", "content": text[last_pos:]})
 
         # Phase 2: Process text parts with standard paragraph chunking
         final_chunks = []
-        
-        # Boundary pattern for text segments
         boundary_pattern = r'(?<=</p>)|(?<=</div>)|(?<=</li>)|(?<=</h[1-6]>)|(?<=\n\n)|(?<=\r\n\r\n)'
 
         for part in parts:
             if part["type"] == "table":
-                # Tables are ALWAYS independent chunks
                 final_chunks.append(part["content"])
                 continue
             
-            # Sub-chunk text
             sub_text = part["content"]
             segments = []
             cur_last_pos = 0
@@ -63,7 +89,6 @@ class Processor:
             if cur_last_pos < len(sub_text):
                 segments.append(sub_text[cur_last_pos:])
 
-            # Greedy aggregation for text segments
             current_chunk = ""
             for seg in segments:
                 if not current_chunk:
