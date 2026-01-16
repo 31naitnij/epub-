@@ -23,7 +23,7 @@ class PandocAPI:
             "docx", "epub", "pdf", "html", "md", "plain"
         ]
 
-    def convert(self, input_path, output_path, input_format=None, output_format=None, extra_args=None):
+    def convert(self, input_path, output_path, input_format=None, output_format=None, extra_args=None, keep_tables_html=False):
         """
         Convert input_path to output_path.
         """
@@ -34,14 +34,21 @@ class PandocAPI:
         
         if input_format:
             cmd.extend(["-f", input_format])
-        if output_format:
-            cmd.extend(["-t", output_format])
+        
+        target_fmt = output_format
+        if not target_fmt:
+             target_fmt = os.path.splitext(output_path)[1].lower().replace('.', '')
+
+        if target_fmt == "markdown" and keep_tables_html:
+            target_fmt = "markdown-grid_tables-simple_tables-multiline_tables-pipe_tables"
+        
+        if target_fmt:
+            cmd.extend(["-t", target_fmt])
         
         # A4 Paper Logic
-        target_ext = os.path.splitext(output_path)[1].lower().replace('.', '')
-        effective_format = output_format if output_format else target_ext
+        effective_format = target_fmt
 
-        if effective_format in ['docx', 'pdf']:
+        if "docx" in effective_format or "pdf" in effective_format:
             cmd.extend(["-V", "geometry:a4paper"])
             cmd.extend(["-V", "papersize=a4"])
         

@@ -17,40 +17,66 @@ class Processor:
 
     def chunk_text(self, text, max_chars):
         """
-        Improved chunking: Split by paragraph/block boundaries (Markdown \n\n or HTML closing tags).
-        Ensures that paragraphs are NEVER split, even if they exceed max_chars.
+        Atomic Chunking: 
+        1. Protects <table>...</table> blocks as independent, atomic chunks.
+        2. Splits remaining text by paragraph/block boundaries (Markdown \n\n or HTML closing tags).
+        Ensures that paragraphs/tables are NEVER split.
         """
         import re
-        # Detailed boundaries: HTML block closures, Markdown double newlines, list items
-        # Used lookbehind to include the delimiter in the segment
-        pattern = r'(?<=</p>)|(?<=</div>)|(?<=</li>)|(?<=</h[1-6]>)|(?<=\n\n)|(?<=\r\n\r\n)'
         
-        # 1. Identify all boundary positions and split into atomic segments
-        segments = []
+        # Phase 1: Identify and isolate <table> blocks
+        # Use DOTALL to match across lines
+        table_pattern = r'(<table.*?>.*?</table>)'
+        
+        parts = []
         last_pos = 0
-        for m in re.finditer(pattern, text):
-            segments.append(text[last_pos:m.end()])
+        for m in re.finditer(table_pattern, text, re.DOTALL | re.IGNORECASE):
+            # Text before table
+            if m.start() > last_pos:
+                parts.append({"type": "text", "content": text[last_pos:m.start()]})
+            # The table itself
+            parts.append({"type": "table", "content": m.group(1)})
             last_pos = m.end()
+        
         if last_pos < len(text):
-            segments.append(text[last_pos:])
+            parts.append({"type": "text", "content": text[last_pos:]})
 
-        # 2. Greedy aggregation that respects atomicity
-        chunks = []
-        current_chunk = ""
-        for seg in segments:
-            if not current_chunk:
-                current_chunk = seg
+        # Phase 2: Process text parts with standard paragraph chunking
+        final_chunks = []
+        
+        # Boundary pattern for text segments
+        boundary_pattern = r'(?<=</p>)|(?<=</div>)|(?<=</li>)|(?<=</h[1-6]>)|(?<=\n\n)|(?<=\r\n\r\n)'
+
+        for part in parts:
+            if part["type"] == "table":
+                # Tables are ALWAYS independent chunks
+                final_chunks.append(part["content"])
                 continue
             
-            if len(current_chunk) + len(seg) <= max_chars:
-                current_chunk += seg
-            else:
-                chunks.append(current_chunk)
-                current_chunk = seg
+            # Sub-chunk text
+            sub_text = part["content"]
+            segments = []
+            cur_last_pos = 0
+            for m in re.finditer(boundary_pattern, sub_text):
+                segments.append(sub_text[cur_last_pos:m.end()])
+                cur_last_pos = m.end()
+            if cur_last_pos < len(sub_text):
+                segments.append(sub_text[cur_last_pos:])
+
+            # Greedy aggregation for text segments
+            current_chunk = ""
+            for seg in segments:
+                if not current_chunk:
+                    current_chunk = seg
+                elif len(current_chunk) + len(seg) <= max_chars:
+                    current_chunk += seg
+                else:
+                    final_chunks.append(current_chunk)
+                    current_chunk = seg
+            if current_chunk:
+                final_chunks.append(current_chunk)
                 
-        if current_chunk:
-            chunks.append(current_chunk)
-        return chunks
+        return final_chunks
 
     def save_cache(self, filename, data):
         path = os.path.join(self.cache_dir, filename)
@@ -80,43 +106,43 @@ class Processor:
 
     def process_pandoc_init(self, input_path, max_chars, only_load=False):
         """
-        Generic Pandoc path. For containers (EPUB/DOCX), we now use per-file processing to preserve structure.
-        For other formats, we use the merged path.
+        Unified Pandoc initialization for all formats.
+        Converts input to Markdown (preserving tables) and chunks it.
         """
         ext = os.path.splitext(input_path)[1].lower()
-        if ext in ['.epub', '.docx']:
-             return self._init_container_processing(input_path, max_chars, source_type="pandoc_per_file", only_load=only_load)
-        
-        # Original merged path for non-containers
         cache_file = self.get_cache_filename(input_path)
         cached_data = self.load_cache(cache_file)
-        if cached_data and cached_data.get("source_type") == "pandoc_generic":
-             return cached_data
+        
+        if cached_data:
+             # Basic migration for source_type if needed
+             if cached_data.get("source_type") in ["pandoc_generic", "native", "pandoc_per_file"]:
+                 return cached_data
 
         if only_load:
             return None
 
-        # 1. Convert to MD
-        temp_md = os.path.join(self.cache_dir, "temp_source.md")
-        success, msg = self.pandoc.convert(input_path, temp_md, output_format="markdown")
+        # 1. Convert to Markdown with table preservation
+        temp_md = os.path.join(self.cache_dir, f"{os.path.basename(input_path)}_source.md")
+        success, msg = self.pandoc.convert(input_path, temp_md, output_format="markdown", keep_tables_html=True)
         if not success:
-            raise RuntimeError(f"Pandoc conversion failed: {msg}")
+            raise RuntimeError(f"Pandoc conversion to Markdown failed: {msg}")
 
         with open(temp_md, 'r', encoding='utf-8') as f:
             full_md = f.read()
 
-        # 2. Chunk
+        # 2. Chunk (with atomic table protection)
         chunks = self.chunk_text(full_md, max_chars)
         
         # 3. Structure
         cached_data = {
-            "source_type": "pandoc_generic",
+            "source_type": "pandoc_unified",
+            "working_dir": None, # No longer needing extracted folders
             "input_path": input_path,
             "input_ext": ext,
             "current_flat_idx": 0,
             "files": [
                 {
-                    "rel_path": "merged_document.md",
+                    "rel_path": "document.md",
                     "chunks": [{"orig": c, "trans": ""} for c in chunks],
                     "finished": False
                 }
@@ -127,101 +153,11 @@ class Processor:
         return cached_data
 
     def _init_container_processing(self, input_path, max_chars, source_type="native", only_load=False):
-        ext = os.path.splitext(input_path)[1].lower()
-        cache_file = self.get_cache_filename(input_path)
-        working_dir = self.get_working_dir(input_path)
-        
-        cached_data = self.load_cache(cache_file)
-        
-        # Reload if exists
-        if cached_data:
-            if cached_data.get("source_type") in ["native", "pandoc_per_file"]:
-                # If folder is missing, re-extract
-                if not os.path.exists(working_dir):
-                    if ext == '.epub':
-                        self.epub_converter.unzip_epub(input_path, working_dir)
-                    elif ext == '.docx':
-                        self.docx_converter.unzip_docx(input_path, working_dir)
-                
-                # Migrate checks
-                needs_save = False
-                if "input_ext" not in cached_data:
-                    cached_data["input_ext"] = ext
-                    needs_save = True
-                if "working_dir" not in cached_data:
-                    cached_data["working_dir"] = working_dir
-                    needs_save = True
-                
-                if needs_save:
-                    self.save_cache(cache_file, cached_data)
-                return cached_data
-            
-            if only_load:
-                return cached_data
-
-        if only_load:
-            return None
-
-        # Ensure working dir exists and content is extracted
-        if ext == '.epub':
-            self.epub_converter.unzip_epub(input_path, working_dir)
-        elif ext == '.docx':
-            self.docx_converter.unzip_docx(input_path, working_dir)
-
-        # Standardizing on "native" source_type but implementation is now Markdown-based with table preservation
-        cached_data = {
-            "source_type": source_type,
-            "is_direct": False, # Always False now -> pure Markdown flow
-            "input_path": input_path,
-            "input_ext": ext,
-            "working_dir": working_dir,
-            "current_flat_idx": 0,
-            "files": [],
-            "finished": False
-        }
-
-        if ext == '.epub':
-            files = self.epub_converter.find_content_files(working_dir)
-            for f_rel in files:
-                if self.epub_converter.should_skip_file(f_rel):
-                    continue
-                f_abs = os.path.join(working_dir, f_rel)
-                with open(f_abs, 'r', encoding='utf-8') as f_obj:
-                    html_content = f_obj.read()
-                
-                # Always convert to Markdown, preserving HTML tables
-                content_to_chunk = self.epub_converter.html_to_markdown(html_content, keep_tables_html=True)
-
-                chunks = self.chunk_text(content_to_chunk, max_chars)
-                cached_data["files"].append({
-                    "rel_path": f_rel,
-                    "chunks": [{"orig": c, "trans": ""} for c in chunks],
-                    "finished": False
-                })
-
-        elif ext == '.docx':
-            # Intermediate HTML -> Markdown (preserving tables)
-            intermediate_html = os.path.join(self.cache_dir, f"{os.path.basename(input_path)}_intermediate.html")
-            success, msg = self.docx_converter.convert_docx_to_html(input_path, intermediate_html)
-            if not success:
-                raise RuntimeError(f"DOCX to HTML conversion failed: {msg}")
-
-            with open(intermediate_html, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-
-            # Convert intermediate HTML to Markdown, preserving tables
-            content_to_chunk = self.pandoc.html_to_markdown(html_content, keep_tables_html=True)
-
-            chunks = self.chunk_text(content_to_chunk, max_chars)
-            # Use 'document_content.md' to signify it's the markdown version
-            cached_data["files"].append({
-                "rel_path": "document_content.md",
-                "chunks": [{"orig": c, "trans": ""} for c in chunks],
-                "finished": False
-            })
-
-        self.save_cache(cache_file, cached_data)
-        return cached_data
+        """
+        DEPRECATED: Container-specific logic is removed for simplicity.
+        Redirects to unified Pandoc initialization.
+        """
+        return self.process_pandoc_init(input_path, max_chars, only_load=only_load)
 
     def process_run(self, input_path, translator, context_rounds=1, callback=None, target_indices=None):
         """
@@ -294,8 +230,8 @@ class Processor:
 
     def finalize_translation(self, input_path, output_path, target_format):
         """
-        Finalize translation by either re-packing to the same format or converting via Pandoc.
-        Ensures structure preservation if output_format == input_ext.
+        Unified Finalization: Uses a two-step conversion (MD -> HTML -> Target) 
+        to ensure embedded HTML tables in Markdown are correctly parsed and preserved.
         """
         cache_file = self.get_cache_filename(input_path)
         cache_data = self.load_cache(cache_file)
@@ -303,88 +239,30 @@ class Processor:
             raise RuntimeError("No cache found for finalization.")
 
         input_ext = cache_data.get("input_ext", os.path.splitext(input_path)[1]).lower()
-        working_dir = cache_data.get("working_dir", self.get_working_dir(input_path))
-        source_type = cache_data.get("source_type", "native")
 
         # Gather translated content
-        translated_files = []
+        merged_translated_md = ""
         for f_data in cache_data["files"]:
-            full_content = "".join([c["trans"] for c in f_data["chunks"]])
-            translated_files.append({
-                "rel_path": f_data["rel_path"],
-                "content": full_content
-            })
+            merged_translated_md += "".join([c["trans"] for c in f_data["chunks"]])
 
-        # Logic for Structure Preservation (Input Format == Output Format)
-        if target_format.lower() == input_ext.replace('.', ''):
-            if input_ext == '.epub':
-                if not working_dir or not os.path.exists(working_dir):
-                    self.epub_converter.unzip_epub(input_path, working_dir)
-                
-                # is_direct is False now (Markdown everywhere)
-                is_direct = False 
-                replaced_count = 0
-                for tf in translated_files:
-                    if tf["rel_path"] == "merged_document.md":
-                         continue
-                         
-                    target_file_path = os.path.join(working_dir, tf["rel_path"])
-                    if os.path.exists(target_file_path):
-                         # REPLACE MD -> HTML FRAGMENT
-                         self.epub_converter.replace_html_content(target_file_path, tf["content"], is_html=False)
-                         replaced_count += 1
-
-                if replaced_count > 0:
-                    self.epub_converter.rezip_epub(working_dir, output_path)
-                    return f"EPUB structure preserved ({replaced_count} files replaced) and exported: {output_path}"
-                else:
-                    return "No structural files found to replace in the original EPUB container. Falling back to Pandoc conversion."
-            
-            elif input_ext == '.docx':
-                if not working_dir or not os.path.exists(working_dir):
-                    self.docx_converter.unzip_docx(input_path, working_dir)
-                
-                # Check if we have the virtual content file (old .html or new .md)
-                doc_content = next((tf["content"] for tf in translated_files if tf["rel_path"] in ["document_content.html", "document_content.md"]), None)
-                
-                if doc_content:
-                    # DOCX Surgical replacement via HTML
-                    # First confirm if content is MD or HTML. If we see document_content.md, it's MD.
-                    # We always treat it as MD now for new process.
-                    
-                    # Convert MD -> HTML
-                    doc_content_html = self.pandoc.markdown_to_html(doc_content)
-                    
-                    temp_html = os.path.join(self.cache_dir, "temp_final.html")
-                    with open(temp_html, 'w', encoding='utf-8') as f:
-                        f.write(doc_content_html)
-                    
-                    temp_translated_docx = os.path.join(self.cache_dir, "temp_translated.docx")
-                    self.docx_converter.convert_html_to_docx(temp_html, temp_translated_docx, reference_docx=input_path)
-                    
-                    # Replace document.xml
-                    self.docx_converter.extract_xml_from_docx(temp_translated_docx, "word/document.xml", os.path.join(working_dir, "word", "document.xml"))
-                    # Rezip
-                    self.docx_converter.rezip_docx(working_dir, output_path)
-                    return f"DOCX structure preserved and exported: {output_path}"
-                else:
-                    return "No structural content found to replace in the original DOCX container. Falling back to Pandoc conversion."
-
-        # Fallback to Pandoc Conversion for all other cases
-        # Merge all content to a single MD/HTML for Pandoc
-        is_html = False # Always markdown now for output generation from chunks
-        merged_content = "\n\n".join([tf["content"] for tf in translated_files])
+        # 1. MD -> Intermediate HTML (to normalize and parse embedded tags)
+        temp_ready_md = os.path.join(self.cache_dir, "translated_final.md")
+        with open(temp_ready_md, 'w', encoding='utf-8') as f:
+            f.write(merged_translated_md)
         
-        temp_source = os.path.join(self.cache_dir, "temp_ready." + ("html" if is_html else "md"))
-        with open(temp_source, 'w', encoding='utf-8') as f:
-            f.write(merged_content)
-        
-        extra_args = []
-        if target_format == "docx":
-            extra_args = ["--reference-doc", input_path] if input_ext == ".docx" else []
-
-        success, msg = self.pandoc.convert(temp_source, output_path, output_format=target_format, extra_args=extra_args)
+        temp_html = os.path.join(self.cache_dir, "translated_final.html")
+        success, msg = self.pandoc.convert(temp_ready_md, temp_html, output_format="html")
         if not success:
-            raise RuntimeError(f"Final conversion failed: {msg}")
+             raise RuntimeError(f"Intermediate conversion to HTML failed: {msg}")
+
+        # 2. HTML -> Target Format
+        extra_args = []
+        if target_format.lower() == "docx" and input_ext == ".docx":
+            # Use original as reference for styles if possible
+            extra_args = ["--reference-doc", input_path]
         
-        return f"Converted and exported to {target_format.upper()} (Merged): {output_path}"
+        success, msg = self.pandoc.convert(temp_html, output_path, output_format=target_format, extra_args=extra_args)
+        if not success:
+             raise RuntimeError(f"Final conversion to {target_format.upper()} failed: {msg}")
+        
+        return f"Successfully exported to {target_format.upper()} via Pandoc (Two-step): {output_path}"
