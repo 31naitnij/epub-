@@ -23,15 +23,29 @@ class Translator:
         messages.append({"role": "user", "content": current_text})
         
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                stream=True,
-                extra_body={
-                    "thinking": "disabled"
-                }
-            )
+            try:
+                # Try with thinking: disabled first
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    stream=True,
+                    extra_body={
+                        "thinking": "disabled"
+                    }
+                )
+            except Exception as e:
+                # If 400 error (or similar), retry without thinking parameter
+                if "400" in str(e) or "BadRequest" in str(e) or "InvalidParameter" in str(e):
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=self.temperature,
+                        stream=True
+                    )
+                else:
+                    raise e
+
             for chunk in response:
                 if chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
