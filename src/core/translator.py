@@ -27,7 +27,10 @@ class Translator:
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
-                stream=True
+                stream=True,
+                extra_body={
+                    "thinking": "disabled"
+                }
             )
             for chunk in response:
                 if chunk.choices[0].delta.content:
