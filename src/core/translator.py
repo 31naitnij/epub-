@@ -24,27 +24,42 @@ class Translator:
         
         try:
             try:
-                # Try with thinking: disabled first
+                # 1. Try Doubao-style nested object (Standard for newer models)
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
                     stream=True,
                     extra_body={
-                        "thinking": "disabled"
+                        "thinking": {"type": "disabled"}
                     }
                 )
-            except Exception as e:
-                # If 400 error (or similar), retry without thinking parameter
-                if "400" in str(e) or "BadRequest" in str(e) or "InvalidParameter" in str(e):
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        temperature=self.temperature,
-                        stream=True
-                    )
+            except Exception as e1:
+                # 2. Try string style as fallback
+                if "400" in str(e1) or "BadRequest" in str(e1) or "InvalidParameter" in str(e1):
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=messages,
+                            temperature=self.temperature,
+                            stream=True,
+                            extra_body={
+                                "thinking": "disabled"
+                            }
+                        )
+                    except Exception as e2:
+                        # 3. Final fallback: retry without thinking parameter
+                        if "400" in str(e2) or "BadRequest" in str(e2) or "InvalidParameter" in str(e2):
+                            response = self.client.chat.completions.create(
+                                model=self.model,
+                                messages=messages,
+                                temperature=self.temperature,
+                                stream=True
+                            )
+                        else:
+                            raise e2
                 else:
-                    raise e
+                    raise e1
 
             for chunk in response:
                 if chunk.choices[0].delta.content:
