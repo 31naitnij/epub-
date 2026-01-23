@@ -140,7 +140,7 @@ class Processor:
         
         if cached_data:
              # Basic migration for source_type if needed
-             if cached_data.get("source_type") in ["pandoc_generic", "native", "pandoc_per_file"]:
+             if cached_data.get("source_type") in ["pandoc_generic", "native", "pandoc_per_file", "pandoc_unified"]:
                  return cached_data
 
         if only_load:

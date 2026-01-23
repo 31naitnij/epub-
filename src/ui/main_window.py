@@ -419,9 +419,13 @@ class MainWindow(QMainWindow):
     def load_chunk_into_editor(self, flat_idx):
         if not hasattr(self, 'flat_chunks') or not self.flat_chunks: return
         
-        # Backup currently edited if logic allows? 
-        # For simplicity, we only load. Saving must be manual or auto on navigation if implemented.
-        # But here we stick to manual "Save" button to avoid overwriting issues on multi-select.
+        # 1. Before loading new, SYNC current editor content back to memory 
+        # (Only if we were already viewing/editing something)
+        if hasattr(self, 'current_indices') and self.current_cache_data:
+             old_f_idx, old_c_idx = self.current_indices
+             # Update the in-memory structure with what's currently in the trans text edit
+             # This ensures that even without clicking "Save", the changes aren't lost when clicking other rows
+             self.current_cache_data["files"][old_f_idx]["chunks"][old_c_idx]["trans"] = self.trans_text_edit.toPlainText()
         
         ch_idx, ck_idx = self.flat_chunks[flat_idx]
         cache_data = self.current_cache_data
@@ -565,21 +569,26 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"总进度: {current_idx+1}/{total} (正在翻译...)")
 
     def save_manual_edit(self):
-        if not self.processor or not hasattr(self, 'current_indices'):
-            QMessageBox.warning(self, "警告", "没有正在编辑的块。")
+        if not self.processor or not self.current_cache_data:
+            QMessageBox.warning(self, "警告", "没有加载的文件或缓存。")
             return
             
         file_path = self.epub_path_edit.text()
         cache_file = self.processor.get_cache_filename(file_path)
-        cache_data = self.processor.load_cache(cache_file)
         
-        if cache_data:
-            ch_idx, chunk_idx = self.current_indices
-            cache_data["files"][ch_idx]["chunks"][chunk_idx]["trans"] = self.trans_text_edit.toPlainText()
-            self.processor.save_cache(cache_file, cache_data)
-            self.status_label.setText(f"已保存逻辑区块 {ch_idx, chunk_idx} 的修改。")
-        else:
-            QMessageBox.warning(self, "警告", "未找到缓存文件。")
+        # 1. Sync current editor content to memory first
+        if hasattr(self, 'current_indices'):
+            ch_idx, ck_idx = self.current_indices
+            self.current_cache_data["files"][ch_idx]["chunks"][ck_idx]["trans"] = self.trans_text_edit.toPlainText()
+            
+            # Update table preview just in case
+            if hasattr(self, 'current_flat_idx_view'):
+                row = self.current_flat_idx_view
+                self.chunk_table.item(row, 1).setText("已翻译" if self.trans_text_edit.toPlainText() else "未翻译")
+
+        # 2. Save the entire in-memory data to disk
+        self.processor.save_cache(cache_file, self.current_cache_data)
+        self.status_label.setText(f"所有手动修改已保存到缓存文件。")
 
     def clear_cache(self):
         file_path = self.epub_path_edit.text()
