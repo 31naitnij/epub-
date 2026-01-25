@@ -133,6 +133,7 @@ class Processor:
         """
         Unified Pandoc initialization for all formats.
         Converts input to Markdown (preserving tables) and chunks it.
+        Extracts media to a local folder.
         """
         ext = os.path.splitext(input_path)[1].lower()
         cache_file = self.get_cache_filename(input_path)
@@ -146,29 +147,68 @@ class Processor:
         if only_load:
             return None
 
-        # 1. Convert to Markdown with table preservation
+        # 1. Setup working dir for media
+        working_dir = self.get_working_dir(input_path)
+        if not os.path.exists(working_dir):
+            os.makedirs(working_dir)
+        media_dir = os.path.join(working_dir, "media")
+        
+        # 2. Convert to Markdown with table preservation and media extraction
         temp_md = os.path.join(self.cache_dir, f"{os.path.basename(input_path)}_source.md")
-        success, msg = self.pandoc.convert(input_path, temp_md, output_format="markdown", keep_tables_html=True)
+        # clean_markdown=True by default now in PandocAPI
+        success, msg = self.pandoc.convert(
+            input_path, temp_md, 
+            output_format="markdown", 
+            keep_tables_html=True,
+            extract_media=media_dir
+        )
         if not success:
             raise RuntimeError(f"Pandoc conversion to Markdown failed: {msg}")
 
         with open(temp_md, 'r', encoding='utf-8') as f:
             full_md = f.read()
 
-        # 2. Chunk (with atomic table protection)
-        chunks = self.chunk_text(full_md, max_chars)
+        # 3. Detect Cover Image
+        cover_image = None
+        if os.path.exists(media_dir):
+            # Pandoc often extracts cover to media/cover.<ext> or media/image1.<ext>
+            # We look for files containing 'cover' first
+            for f in os.listdir(media_dir):
+                if 'cover' in f.lower():
+                    cover_image = os.path.join(media_dir, f)
+                    break
+            # Fallback for some epubs where cover is just the first image
+            if not cover_image and os.listdir(media_dir):
+                potential = os.path.join(media_dir, os.listdir(media_dir)[0])
+                if os.path.getsize(potential) > 10000: # Simple heuristic for "is it a cover"
+                    cover_image = potential
+
+        # 4. Chunk (with atomic table protection)
+        raw_chunks = self.chunk_text(full_md, max_chars)
         
-        # 3. Structure
+        processed_chunks = []
+        for c in raw_chunks:
+            # If it's a table chunk (starts with <table), convert it to clean Markdown
+            if c.strip().lower().startswith("<table"):
+                # keep_tables_html=False to get Markdown table
+                # clean_markdown=True is already default or handled in PandocAPI
+                clean_c = self.pandoc.html_to_markdown(c, keep_tables_html=False, clean_markdown=True)
+                processed_chunks.append(clean_c)
+            else:
+                processed_chunks.append(c)
+
+        # 5. Structure
         cached_data = {
             "source_type": "pandoc_unified",
-            "working_dir": None, # No longer needing extracted folders
+            "working_dir": working_dir, # Store working dir for media reference
             "input_path": input_path,
             "input_ext": ext,
+            "cover_image": cover_image,
             "current_flat_idx": 0,
             "files": [
                 {
                     "rel_path": "document.md",
-                    "chunks": [{"orig": c, "trans": ""} for c in chunks],
+                    "chunks": [{"orig": c, "trans": ""} for c in processed_chunks],
                     "finished": False
                 }
             ],
@@ -284,8 +324,25 @@ class Processor:
         extra_args = []
         if target_format.lower() == "docx" and input_ext == ".docx":
             # Use original as reference for styles if possible
-            extra_args = ["--reference-doc", input_path]
+            extra_args.append("--reference-doc")
+            extra_args.append(input_path)
         
+        if target_format.lower() == "epub":
+            cover_img = cache_data.get("cover_image")
+            if cover_img and os.path.exists(cover_img):
+                extra_args.append("--epub-cover-image")
+                extra_args.append(cover_img)
+
+        # Ensure media is found (Pandoc searches relative to CWD or uses absolute paths in HTML)
+        # Since we extracted to media_dir, we might need to tell Pandoc where it is or ensure paths in HTML are correct.
+        # Actually, Pandoc extraction creates paths like 'media/image1.jpg' in the Markdown.
+        # When converting HTML -> Target, if those folders exist in the CWD, it works.
+        # We should set resources path.
+        working_dir = cache_data.get("working_dir")
+        if working_dir:
+            extra_args.append("--resource-path")
+            extra_args.append(working_dir)
+
         success, msg = self.pandoc.convert(temp_html, output_path, output_format=target_format, extra_args=extra_args)
         if not success:
              raise RuntimeError(f"Final conversion to {target_format.upper()} failed: {msg}")

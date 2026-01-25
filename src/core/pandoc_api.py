@@ -23,7 +23,7 @@ class PandocAPI:
             "docx", "epub", "pdf", "html", "md", "plain"
         ]
 
-    def convert(self, input_path, output_path, input_format=None, output_format=None, extra_args=None, keep_tables_html=False):
+    def convert(self, input_path, output_path, input_format=None, output_format=None, extra_args=None, keep_tables_html=False, clean_markdown=True, extract_media=None):
         """
         Convert input_path to output_path.
         """
@@ -39,8 +39,13 @@ class PandocAPI:
         if not target_fmt:
              target_fmt = os.path.splitext(output_path)[1].lower().replace('.', '')
 
-        if target_fmt == "markdown" and keep_tables_html:
-            target_fmt = "markdown-grid_tables-simple_tables-multiline_tables-pipe_tables"
+        if target_fmt == "markdown":
+            if keep_tables_html:
+                # Disable table extensions to force Pandoc to keep tables as raw HTML
+                target_fmt += "-grid_tables-simple_tables-multiline_tables-pipe_tables"
+            if clean_markdown:
+                # Disable specific attribute extensions and raw HTML for cleaner output
+                target_fmt += "-header_attributes-fenced_code_attributes-link_attributes-inline_code_attributes-table_attributes-bracketed_spans-native_spans-raw_html"
         
         if target_fmt:
             cmd.extend(["-t", target_fmt])
@@ -52,6 +57,9 @@ class PandocAPI:
             cmd.extend(["-V", "geometry:a4paper"])
             cmd.extend(["-V", "papersize=a4"])
         
+        if extract_media:
+            cmd.extend(["--extract-media", extract_media])
+
         if extra_args:
             cmd.extend(extra_args)
 
@@ -61,17 +69,18 @@ class PandocAPI:
         except subprocess.CalledProcessError as e:
             return False, e.stderr
 
-    def html_to_markdown(self, html_content, keep_tables_html=False):
+    def html_to_markdown(self, html_content, keep_tables_html=False, clean_markdown=True):
         """Convert HTML string to Markdown string using Pandoc."""
         to_fmt = "markdown"
         if keep_tables_html:
             # Disable table extensions to force Pandoc to keep tables as raw HTML
-            to_fmt = "markdown-grid_tables-simple_tables-multiline_tables-pipe_tables"
+            to_fmt += "-grid_tables-simple_tables-multiline_tables-pipe_tables"
+        if clean_markdown:
+            to_fmt += "-header_attributes-fenced_code_attributes-link_attributes-inline_code_attributes-table_attributes-bracketed_spans-native_spans-raw_html"
             
         result = self._convert_string(html_content, "html", to_fmt)
         
-        # Patch: Fix Pandoc failing to parse shortcut syntax for classes starting with _, e.g. [text]{._Bold}
-        # We convert {._Bold} -> {class="_Bold"} which Pandoc handles correctly.
+        # Note: We keep the patch for class starting with _ just in case, but clean_markdown should minimize its need.
         import re
         result = re.sub(r'\{\.(\_[\w-]+)\}', r'{class="\1"}', result)
         
