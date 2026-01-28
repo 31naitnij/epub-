@@ -137,7 +137,8 @@ class MainWindow(QMainWindow):
         prompt_layout = QHBoxLayout()
         from src.config import DEFAULT_PROMPT
         self.prompt_edit = QTextEdit(DEFAULT_PROMPT)
-        self.prompt_edit.setMaximumHeight(60)
+        # 移除固定高度限制，使其可自适应
+        self.prompt_edit.setMinimumHeight(40)
         prompt_layout.addWidget(QLabel("Prompt:"))
         prompt_layout.addWidget(self.prompt_edit)
         config_layout.addLayout(prompt_layout)
@@ -168,7 +169,7 @@ class MainWindow(QMainWindow):
         self.group_table.itemSelectionChanged.connect(self.on_group_selection_changed)
         
         group_layout.addWidget(QLabel("1. 逻辑分组 (API 单元)"))
-        group_layout.addWidget(self.group_table)
+        group_layout.addWidget(self.group_table, 1)
         self.mid_splitter.addWidget(group_widget)
 
         # Lane 2: Block Table
@@ -184,7 +185,7 @@ class MainWindow(QMainWindow):
         self.block_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         
         block_layout.addWidget(QLabel("2. 组内分块 (段落)"))
-        block_layout.addWidget(self.block_table)
+        block_layout.addWidget(self.block_table, 1)
         self.mid_splitter.addWidget(block_widget)
         
         editor_widget = QWidget()
@@ -201,7 +202,7 @@ class MainWindow(QMainWindow):
         self.editor_splitter.addWidget(self.orig_text_edit)
         self.editor_splitter.addWidget(self.trans_text_edit)
         
-        editor_layout.addWidget(self.editor_splitter)
+        editor_layout.addWidget(self.editor_splitter, 1)
         
         self.btn_save_edit = QPushButton("保存组修改")
         self.btn_save_edit.clicked.connect(self.save_manual_edit)

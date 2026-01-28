@@ -236,7 +236,7 @@ class Processor:
         all_translated_blocks = {} # index -> text
         for chunk in cache_data["files"][0]["chunks"]: # epub_anchor 只有一个文件 all_groups
             g_indices = chunk.get("block_indices", [])
-            full_trans = chunk["trans"]
+            full_trans = chunk.get("trans", "")
             if chunk.get("is_error"):
                 # 移除错误标记前缀
                 full_trans = full_trans.replace("【结构校验失败，请手动检查】\n", "")
@@ -248,16 +248,17 @@ class Processor:
                 for idx, text in zip(g_indices, translated_texts):
                     all_translated_blocks[idx] = text
             else:
-                # 如果校验仍失败，尝试简单回退或按原样（这里可能需要更复杂的启发式匹配）
+                # 如果校验仍失败，尝试简单回退或按原样
                 pass
 
         # 2. 按文件处理还原
         block_to_file = cache_data.get("block_to_file", {})
         file_to_blocks = {}
         for b_idx, rel_path in block_to_file.items():
+            b_idx_int = int(b_idx)
             if rel_path not in file_to_blocks:
                 file_to_blocks[rel_path] = []
-            file_to_blocks[rel_path].append(b_idx)
+            file_to_blocks[rel_path].append(b_idx_int)
             
         for rel_path, b_indices in file_to_blocks.items():
             abs_path = os.path.join(temp_dir, rel_path)
@@ -265,12 +266,18 @@ class Processor:
                 soup = BeautifulSoup(f, 'html.parser')
             
             # 重新定位 soup 中的 blocks
-            # 由于 BeautifulSoup 无法直接保存引用，我们利用相同的逻辑重新查找
             soup_blocks = self.epub_anchor_processor.create_blocks_from_soup(soup)
             
+            # 安全检查：如果当前文件解析出的块数量与缓存记录的不一致，
+            # 说明提取逻辑发生了变化或文件被错误索引，必须跳过以防内容串位（错位到封面等）
+            if len(soup_blocks) != len(b_indices):
+                print(f"WARNING: Block count mismatch in {rel_path}. Cache: {len(b_indices)}, File: {len(soup_blocks)}. Skipping file to prevent corruption.")
+                continue
+
             # 匹配并还原
             for i, b_idx in enumerate(b_indices):
                 if b_idx in all_translated_blocks:
+                    # print(f"DEBUG: Restoring block {b_idx} (local {i})")
                     self.epub_anchor_processor.restore_html(soup_blocks[i], all_translated_blocks[b_idx], soup)
             
             # 保存修改后的 XHTML
