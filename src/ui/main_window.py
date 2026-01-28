@@ -10,7 +10,6 @@ import sys
 import shutil
 
 from src.core.config_manager import ConfigManager
-from src.core.converter import EPUBConverter
 from src.core.translator import Translator
 from src.core.processor import Processor
 
@@ -19,10 +18,9 @@ class TranslationWorker(QThread):
     finished = Signal(bool)
     error = Signal(str)
 
-    def __init__(self, processor, converter, translator, epub_path, max_chars, context_rounds=1, target_indices=None):
+    def __init__(self, processor, translator, epub_path, max_chars, context_rounds=1, target_indices=None):
         super().__init__()
         self.processor = processor
-        self.converter = converter
         self.translator = translator
         self.epub_path = epub_path
         self.max_chars = max_chars
@@ -49,7 +47,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AI EPUB 翻译工具")
         self.resize(1100, 800)
         self.config_manager = ConfigManager()
-        self.converter = EPUBConverter()
         
         self.init_ui()
         self.load_settings_history()
@@ -499,7 +496,6 @@ class MainWindow(QMainWindow):
         
         self.worker = TranslationWorker(
             self.processor, 
-            self.converter, 
             translator, 
             file_path,
             settings['chunk_size'],
@@ -541,7 +537,6 @@ class MainWindow(QMainWindow):
         
         self.worker = TranslationWorker(
             self.processor, 
-            self.converter, 
             translator, 
             file_path,
             settings['chunk_size'],
