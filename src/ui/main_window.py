@@ -99,16 +99,6 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(btn_browse_output)
         path_layout.addLayout(output_layout)
         
-        # New Output Format Selector
-        format_layout = QHBoxLayout()
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["EPUB", "DOCX (A4)", "Markdown"])
-        format_layout.addWidget(QLabel("输出格式:"))
-        format_layout.addWidget(self.format_combo)
-        
-        format_layout.addStretch()
-        path_layout.addLayout(format_layout)
-        
         top_layout.addWidget(path_group)
 
         # API 配置区
@@ -148,8 +138,8 @@ class MainWindow(QMainWindow):
         config_layout.addLayout(row1)
 
         prompt_layout = QHBoxLayout()
-        default_prompt = "你是一位多语言翻译专家，将以下文本中所有英语内容翻译为中文，其他语言的内容（包括代码、专有名词、混合语言等）请保留原文，不得翻译。严格保持原文的格式，编号、标点符号、换行、空行，整体结构不变。仅输出翻译结果，不要添加任何解释、说明、问候或额外内容，也不要删减或改动原文结构。"
-        self.prompt_edit = QTextEdit(default_prompt)
+        from src.config import DEFAULT_PROMPT
+        self.prompt_edit = QTextEdit(DEFAULT_PROMPT)
         self.prompt_edit.setMaximumHeight(60)
         prompt_layout.addWidget(QLabel("Prompt:"))
         prompt_layout.addWidget(self.prompt_edit)
@@ -166,46 +156,66 @@ class MainWindow(QMainWindow):
         # New Mid Splitter: Table (Left) vs Editors (Right)
         self.mid_splitter = QSplitter(Qt.Horizontal)
         
-        # Left: Chunk Table
-        table_widget = QWidget()
-        table_layout = QVBoxLayout(table_widget)
-        table_layout.setContentsMargins(0,0,0,0)
+        # Lane 1: Group Table
+        group_widget = QWidget()
+        group_layout = QVBoxLayout(group_widget)
+        group_layout.setContentsMargins(0,0,0,0)
         
-        self.chunk_table = QTableWidget()
-        self.chunk_table.setColumnCount(3)
-        self.chunk_table.setHorizontalHeaderLabels(["ID", "状态", "原文预览"])
-        self.chunk_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.chunk_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.chunk_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.chunk_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.chunk_table.setSelectionMode(QAbstractItemView.ExtendedSelection) # Allow multiple
-        self.chunk_table.verticalHeader().setVisible(False) # Hide default row numbers
-        self.chunk_table.itemSelectionChanged.connect(self.on_table_selection_changed)
+        self.group_table = QTableWidget()
+        self.group_table.setColumnCount(3)
+        self.group_table.setHorizontalHeaderLabels(["ID", "状态", "分组预览"])
+        self.group_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.group_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.group_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.group_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.group_table.itemSelectionChanged.connect(self.on_group_selection_changed)
         
-        table_layout.addWidget(self.chunk_table)
-        
-        # Save Button below table for quick access
-        self.btn_save_edit = QPushButton("保存当前块修改")
-        self.btn_save_edit.clicked.connect(self.save_manual_edit)
-        table_layout.addWidget(self.btn_save_edit)
-        
-        self.mid_splitter.addWidget(table_widget)
+        group_layout.addWidget(QLabel("1. 逻辑分组 (API 单元)"))
+        group_layout.addWidget(self.group_table)
+        self.mid_splitter.addWidget(group_widget)
 
-        # Right: Editors
+        # Lane 2: Block Table
+        block_widget = QWidget()
+        block_layout = QVBoxLayout(block_widget)
+        block_layout.setContentsMargins(0,0,0,0)
+        
+        self.block_table = QTableWidget()
+        self.block_table.setColumnCount(2)
+        self.block_table.setHorizontalHeaderLabels(["ID", "内容预览"])
+        self.block_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.block_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.block_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        
+        block_layout.addWidget(QLabel("2. 组内分块 (段落)"))
+        block_layout.addWidget(self.block_table)
+        self.mid_splitter.addWidget(block_widget)
+        
+        editor_widget = QWidget()
+        editor_layout = QVBoxLayout(editor_widget)
+        editor_layout.setContentsMargins(0,0,0,0)
+        editor_layout.addWidget(QLabel("3. 翻译对照 (组级别)"))
+
         self.editor_splitter = QSplitter(Qt.Horizontal)
         self.orig_text_edit = QTextEdit()
-        self.orig_text_edit.setPlaceholderText("原文...")
+        self.orig_text_edit.setPlaceholderText("API 请求文本 (带锚点)...")
         self.orig_text_edit.setReadOnly(True)
         self.trans_text_edit = QTextEdit()
-        self.trans_text_edit.setPlaceholderText("译文...")
+        self.trans_text_edit.setPlaceholderText("API 响应译文...")
         self.editor_splitter.addWidget(self.orig_text_edit)
         self.editor_splitter.addWidget(self.trans_text_edit)
         
-        self.mid_splitter.addWidget(self.editor_splitter)
+        editor_layout.addWidget(self.editor_splitter)
         
-        # Set stretch: Table 1 part, Editors 3 parts
+        self.btn_save_edit = QPushButton("保存组修改")
+        self.btn_save_edit.clicked.connect(self.save_manual_edit)
+        editor_layout.addWidget(self.btn_save_edit)
+        
+        self.mid_splitter.addWidget(editor_widget)
+        
+        # Set stretch: Group 1, Block 1, Editor 2
         self.mid_splitter.setStretchFactor(0, 1)
-        self.mid_splitter.setStretchFactor(1, 3)
+        self.mid_splitter.setStretchFactor(1, 1)
+        self.mid_splitter.setStretchFactor(2, 2)
         
         mid_layout.addWidget(self.mid_splitter)
         
@@ -218,9 +228,9 @@ class MainWindow(QMainWindow):
         
         ctrl_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
-        self.btn_prepare = QPushButton("仅分块处理")
-        self.btn_translate_sel = QPushButton("翻译选中块")
-        self.btn_start = QPushButton("全部翻译")
+        self.btn_prepare = QPushButton("分块并分组")
+        self.btn_translate_sel = QPushButton("翻译选中组")
+        self.btn_start = QPushButton("开始翻译")
         self.btn_stop = QPushButton("停止")
         self.btn_clear_cache = QPushButton("清除缓存")
         self.btn_output = QPushButton("导出")
@@ -306,7 +316,8 @@ class MainWindow(QMainWindow):
         self.api_url_edit.setText(s.get('api_url', ''))
         self.model_edit.setText(s.get('model', 'gpt-4o'))
         self.temp_spin.setValue(s.get('temp', 0.7))
-        self.prompt_edit.setPlainText(s.get('prompt', ""))
+        from src.config import DEFAULT_PROMPT
+        self.prompt_edit.setPlainText(s.get('prompt') or DEFAULT_PROMPT)
         self.chunk_size_spin.setValue(s['chunk_size'])
         self.context_rounds_spin.setValue(s.get('context_rounds', 1))
 
@@ -329,7 +340,7 @@ class MainWindow(QMainWindow):
     def prepare_chunks_only(self):
         result = self.init_processor_and_chunks()
         if result:
-            self.status_label.setText("分块处理完成，可以开始浏览或选择性翻译。")
+            self.status_label.setText("分块与分组完成。")
             self.btn_translate_sel.setEnabled(True)
             self.btn_output.setEnabled(True)
 
@@ -344,18 +355,18 @@ class MainWindow(QMainWindow):
         cache_dir = self.cache_path_edit.text()
         self.processor = Processor(cache_dir)
         
-        # Decide mode
-        # Always use Pandoc Mode (Generic Markdown process) as Native Mode is removed
-        self.current_mode = "pandoc_generic"
+        # The current version only supports EPUB Anchor Mode.
+        self.current_mode = "epub_anchor"
         
         try:
             if not autoload:
                 self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
             
-            if not autoload and not self.processor.pandoc.check_availability():
-               QMessageBox.critical(self, "错误", "未检测到 Pandoc，无法执行此格式转换。请安装 Pandoc。")
-               return False
-            cache_data = self.processor.process_pandoc_init(file_path, settings['chunk_size'], only_load=autoload)
+            if not file_path.lower().endswith(".epub"):
+                QMessageBox.critical(self, "错误", "当前版本仅支持 EPUB 格式の手术式翻译。")
+                return False
+                
+            cache_data = self.processor.process_epub_anchor_init(file_path, settings['chunk_size'], only_load=autoload)
             
             if cache_data is None:
                 if autoload: return False
@@ -363,32 +374,32 @@ class MainWindow(QMainWindow):
                 return False
 
             self.flat_chunks = []
-            self.chunk_table.setRowCount(0)
-            self.chunk_table.blockSignals(True)
+            self.group_table.setRowCount(0)
+            self.group_table.blockSignals(True)
             
             row = 0
             for f_i, f_data in enumerate(cache_data["files"]):
                 for c_i, c_data in enumerate(f_data["chunks"]):
                     self.flat_chunks.append((f_i, c_i))
                     
-                    self.chunk_table.insertRow(row)
+                    self.group_table.insertRow(row)
                     # ID
-                    self.chunk_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+                    self.group_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
                     # Status
                     status_str = "已翻译" if c_data["trans"] else "未翻译"
-                    self.chunk_table.setItem(row, 1, QTableWidgetItem(status_str))
+                    self.group_table.setItem(row, 1, QTableWidgetItem(status_str))
                     # Preview
                     preview = c_data["orig"][:50].replace("\n", " ") + "..."
-                    self.chunk_table.setItem(row, 2, QTableWidgetItem(preview))
+                    self.group_table.setItem(row, 2, QTableWidgetItem(preview))
                     
                     row += 1
             
-            self.chunk_table.blockSignals(False)
+            self.group_table.blockSignals(False)
             self.current_cache_data = cache_data
             
             # Select first row if exists
             if row > 0:
-                self.chunk_table.selectRow(0)
+                self.group_table.selectRow(0)
             
             if autoload:
                 self.status_label.setText("已自动加载上次的翻译进度。")
@@ -401,8 +412,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "错误", f"分块处理失败: {e}\n(如果是 DOCX/PDF 转换，请确保已安装 Pandoc)")
             return False
 
-    def on_table_selection_changed(self):
-        selected_items = self.chunk_table.selectedItems()
+    def on_group_selection_changed(self):
+        selected_items = self.group_table.selectedItems()
         if not selected_items: return
         
         # Determine unique rows
@@ -411,12 +422,31 @@ class MainWindow(QMainWindow):
         
         # Preview first selected row
         first_row = rows[0]
-        self.load_chunk_into_editor(first_row)
+        self.load_group_into_editor(first_row)
+        self.update_block_table(first_row)
         
         if len(rows) > 1:
-            self.status_label.setText(f"已选择 {len(rows)} 个块待翻译")
+            self.status_label.setText(f"已选择 {len(rows)} 个分组待翻译")
             
-    def load_chunk_into_editor(self, flat_idx):
+    def update_block_table(self, group_idx):
+        if not hasattr(self, 'flat_chunks') or not self.current_cache_data: return
+        
+        f_idx, g_idx = self.flat_chunks[group_idx]
+        group = self.current_cache_data["files"][f_idx]["chunks"][g_idx]
+        block_indices = group.get("block_indices", [])
+        
+        self.block_table.setRowCount(0)
+        self.block_table.blockSignals(True)
+        for i, b_idx in enumerate(block_indices):
+            self.block_table.insertRow(i)
+            self.block_table.setItem(i, 0, QTableWidgetItem(str(b_idx + 1)))
+            
+            block_meta = self.current_cache_data["all_blocks"][b_idx]
+            preview = block_meta["text"][:100].replace("\n", " ")
+            self.block_table.setItem(i, 1, QTableWidgetItem(preview))
+        self.block_table.blockSignals(False)
+
+    def load_group_into_editor(self, flat_idx):
         if not hasattr(self, 'flat_chunks') or not self.flat_chunks: return
         
         # 1. Before loading new, SYNC current editor content back to memory 
@@ -443,7 +473,7 @@ class MainWindow(QMainWindow):
         if not self.init_processor_and_chunks(): return # Ensure init (though mostly redundant if already loaded)
         
         # Get selected rows
-        selected_items = self.chunk_table.selectedItems()
+        selected_items = self.group_table.selectedItems()
         rows = sorted(list(set(item.row() for item in selected_items)))
         
         if not rows:
@@ -530,8 +560,6 @@ class MainWindow(QMainWindow):
             self.status_label.setText("正在停止...")
 
     def on_progress(self, current_idx, total, orig, trans, is_finished):
-        if not hasattr(self, 'chunk_table'): return
-        
         # 1. Update In-Memory Cache (Critical for Review)
         if hasattr(self, 'flat_chunks') and hasattr(self, 'current_cache_data'):
             f_idx, c_idx = self.flat_chunks[current_idx]
@@ -539,27 +567,19 @@ class MainWindow(QMainWindow):
                 self.current_cache_data["files"][f_idx]["chunks"][c_idx]["trans"] = trans
         
         # 2. Update Table Status
-        if current_idx < self.chunk_table.rowCount():
-             status_item = self.chunk_table.item(current_idx, 1)
+        if current_idx < self.group_table.rowCount():
+             status_item = self.group_table.item(current_idx, 1)
              if status_item:
                  status_item.setText("翻译中..." if not is_finished else "已翻译")
         
         # 3. Auto-follow: Select the row being translated
-        # This triggers on_table_selection_changed -> load_chunk_into_editor
-        # We block signals briefly if we don't want to double-trigger, but here we WANT the trigger
-        # to update the editor view.
-        # However, to avoid fighting with user selection if they are browsing elsewhere,
-        # we might check if the editor is currently "tracking" or just force it.
-        # Given user feedback "it stays on the first", they likely WANT it to follow.
-        
         # Check if we need to switch view
-        cur_row = self.chunk_table.currentRow()
+        cur_row = self.group_table.currentRow()
         if cur_row != current_idx:
-            self.chunk_table.selectRow(current_idx)
-            # The signal will handle loading text into editor
+            self.group_table.selectRow(current_idx)
+            # The signal will handle loading text into editor and updating block table
         else:
             # If already selected, just update the text manually because signal might not fire
-            # or if it's partial stream update
             self.orig_text_edit.setPlainText(orig)
             self.trans_text_edit.setPlainText(trans)
         
@@ -584,7 +604,7 @@ class MainWindow(QMainWindow):
             # Update table preview just in case
             if hasattr(self, 'current_flat_idx_view'):
                 row = self.current_flat_idx_view
-                self.chunk_table.item(row, 1).setText("已翻译" if self.trans_text_edit.toPlainText() else "未翻译")
+                self.group_table.item(row, 1).setText("已翻译" if self.trans_text_edit.toPlainText() else "未翻译")
 
         # 2. Save the entire in-memory data to disk
         self.processor.save_cache(cache_file, self.current_cache_data)
@@ -656,19 +676,9 @@ class MainWindow(QMainWindow):
         if not os.path.exists(output_root):
             os.makedirs(output_root)
             
-        out_fmt_str = self.format_combo.currentText()
-        # Map UI string to format
-        target_format = "docx"
-        file_ext = "docx"
-        if "DOCX" in out_fmt_str: 
-            target_format = "docx"
-            file_ext = "docx"
-        elif "EPUB" in out_fmt_str: 
-            target_format = "epub"
-            file_ext = "epub"
-        elif "Markdown" in out_fmt_str: 
-            target_format = "markdown"
-            file_ext = "md"
+        # Always EPUB since Pandoc/Docx modes are removed
+        target_format = "epub"
+        file_ext = "epub"
 
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         output_path = os.path.join(output_root, f"translated_{base_name}.{file_ext}")

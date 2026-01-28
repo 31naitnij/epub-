@@ -3,5 +3,3 @@ beautifulsoup4
 openai
 lxml
 ebooklib
-markdownify
-markdown
