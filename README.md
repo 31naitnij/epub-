@@ -16,11 +16,7 @@
 ## 🚀 怎么使用？
 
 ### 方式一：直接下载使用（推荐）
-1. 前往本仓库的 **[Releases](https://github.com/31naitnij/AI-EPUB-Translator/releases)** 页面。
-2. 下载适合你系统的版本（Windows 下载 `.exe` 文件，macOS 下载打包好的程序）。
-3. 直接运行即可，无需安装 Python。
-
----
+前往本仓库的 **[Releases](https://github.com/31naitnij/AI-EPUB-Translator/releases)** 页面。
 
 ### 方式二：通过源代码运行
 如果你想体验最新功能或进行修改，可以按以下步骤运行：
