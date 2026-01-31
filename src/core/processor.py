@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 from src.core.epub_anchor_processor import EPubAnchorProcessor
+from src.core.docx_anchor_processor import DocxAnchorProcessor
 from bs4 import BeautifulSoup
 
 class Processor:
@@ -11,6 +12,7 @@ class Processor:
             os.makedirs(cache_dir)
         self.status = "idle" # idle, running, stopped
         self.epub_anchor_processor = EPubAnchorProcessor()
+        self.docx_anchor_processor = DocxAnchorProcessor()
 
     def save_cache(self, filename, data):
         path = os.path.join(self.cache_dir, filename)
@@ -32,9 +34,9 @@ class Processor:
         base = os.path.basename(input_filename)
         return os.path.join(self.cache_dir, f"{base}_extracted")
 
-    def process_epub_anchor_init(self, input_path, max_chars, only_load=False):
+    def process_epub_anchor_init(self, input_path, max_chars, only_load=False, callback=None):
         """
-        基于锚点标记的 EPUB 初始化（不使用 Pandoc）。
+        基于锚点标记的 EPUB 初始化。
         """
         cache_file = self.get_cache_filename(input_path)
         cached_data = self.load_cache(cache_file)
@@ -46,9 +48,10 @@ class Processor:
             return None
 
         # 1. 解压 EPUB
-        temp_dir = self.epub_anchor_processor.extract_epub(input_path)
+        temp_dir = self.epub_anchor_processor.extract_epub(input_path, callback=callback)
         
         # 2. 遍历 XHTML 文件并提取块
+        if callback: callback("正在遍历 XHTML 文件并提取文本块...")
         xhtml_files = self.epub_anchor_processor.get_xhtml_files()
         all_blocks = []
         files_info = []
@@ -74,6 +77,7 @@ class Processor:
             })
 
         # 3. 分组
+        if callback: callback("正在进行逻辑分组与分块...")
         groups = []
         current_group = []
         current_size = 0
@@ -125,6 +129,105 @@ class Processor:
         }
         
         # 记录每个 block 所属的文件路径，方便还原
+        block_to_file = {}
+        for f_info in files_info:
+            for b_idx in range(f_info['block_range'][0], f_info['block_range'][1]):
+                block_to_file[b_idx] = f_info['rel_path']
+        cached_data["block_to_file"] = block_to_file
+        
+        self.save_cache(cache_file, cached_data)
+        return cached_data
+
+    def process_docx_anchor_init(self, input_path, max_chars, only_load=False, callback=None):
+        """
+        基于锚点标记的 DOCX 初始化。
+        """
+        cache_file = self.get_cache_filename(input_path)
+        cached_data = self.load_cache(cache_file)
+        
+        if cached_data and cached_data.get("source_type") == "docx_anchor":
+            return cached_data
+
+        if only_load:
+            return None
+
+        # 1. 解压 DOCX
+        temp_dir = self.docx_anchor_processor.extract_docx(input_path, callback=callback)
+        
+        # 2. 遍历 XML 文件并提取块
+        if callback: callback("正在遍历 XML 文件并提取文本块...")
+        xml_files = self.docx_anchor_processor.get_xml_files()
+        all_blocks = []
+        files_info = []
+        
+        for xml_file in xml_files:
+            rel_path = os.path.relpath(xml_file, temp_dir)
+            with open(xml_file, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f, 'xml') # 使用 xml 解析器
+            
+            file_blocks = self.docx_anchor_processor.create_blocks_from_soup(soup)
+            if not file_blocks:
+                continue
+                
+            start_idx = len(all_blocks)
+            all_blocks.extend(file_blocks)
+            end_idx = len(all_blocks)
+            
+            files_info.append({
+                "rel_path": rel_path,
+                "block_range": [start_idx, end_idx],
+                "finished": False
+            })
+
+        # 3. 分组
+        if callback: callback("正在进行逻辑分组与分块...")
+        groups = []
+        current_group = []
+        current_size = 0
+        for i, block in enumerate(all_blocks):
+            if current_size + block['size'] > max_chars and current_group:
+                groups.append(current_group)
+                current_group = []
+                current_size = 0
+            current_group.append(i)
+            current_size += block['size']
+        if current_group:
+            groups.append(current_group)
+
+        # 4. 构造持久化结构
+        chunks = []
+        for g_indices in groups:
+            group_blocks = [all_blocks[idx] for idx in g_indices]
+            original_text = self.docx_anchor_processor.format_for_ai(group_blocks)
+            chunks.append({
+                "orig": original_text,
+                "trans": "",
+                "block_indices": g_indices,
+                "is_error": False
+            })
+
+        cached_data = {
+            "source_type": "docx_anchor",
+            "working_dir": temp_dir,
+            "input_path": input_path,
+            "input_ext": ".docx",
+            "current_flat_idx": 0,
+            "files": [
+                {
+                    "rel_path": "all_groups",
+                    "chunks": chunks,
+                    "finished": False
+                }
+            ],
+            "all_blocks": [
+                {
+                    "text": b['text'],
+                    "formats": b['formats'],
+                } for b in all_blocks
+            ],
+            "finished": False
+        }
+        
         block_to_file = {}
         for f_info in files_info:
             for b_idx in range(f_info['block_range'][0], f_info['block_range'][1]):
@@ -190,7 +293,13 @@ class Processor:
             # 校（锚点模式）
             g_indices = chunk.get("block_indices", [])
             group_blocks = [{"text": cached_data["all_blocks"][idx]["text"], "formats": cached_data["all_blocks"][idx]["formats"]} for idx in g_indices]
-            _, ok = self.epub_anchor_processor.validate_and_parse_response(full_translation, group_blocks)
+            
+            # 根据 source_type 选择校验器
+            if cached_data.get("source_type") == "docx_anchor":
+                _, ok = self.docx_anchor_processor.validate_and_parse_response(full_translation, group_blocks)
+            else:
+                _, ok = self.epub_anchor_processor.validate_and_parse_response(full_translation, group_blocks)
+                
             if not ok:
                 full_translation = f"【结构校验失败，请手动检查】\n{full_translation}"
                 chunk["is_error"] = True
@@ -214,7 +323,11 @@ class Processor:
         return True
 
     def finalize_translation(self, input_path, output_path, target_format=None):
-        return self.finalize_epub_anchor_translation(input_path, output_path)
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext == ".docx":
+            return self.finalize_docx_anchor_translation(input_path, output_path)
+        else:
+            return self.finalize_epub_anchor_translation(input_path, output_path)
 
     def finalize_epub_anchor_translation(self, input_path, output_path):
         """
@@ -287,3 +400,63 @@ class Processor:
         # 3. 重新打包
         self.epub_anchor_processor.repack_epub(output_path)
         return f"Successfully exported to EPUB via Anchor Strategy: {output_path}"
+
+    def finalize_docx_anchor_translation(self, input_path, output_path):
+        """
+        基于锚点的 DOCX 完成逻辑。
+        """
+        cache_file = self.get_cache_filename(input_path)
+        cache_data = self.load_cache(cache_file)
+        if not cache_data:
+            raise RuntimeError("No cache found for finalization.")
+            
+        temp_dir = cache_data.get("working_dir")
+        if not temp_dir or not os.path.exists(temp_dir):
+            temp_dir = self.docx_anchor_processor.extract_docx(input_path)
+        
+        # 1. 整理所有翻译后的块
+        all_translated_blocks = {}
+        for chunk in cache_data["files"][0]["chunks"]:
+            g_indices = chunk.get("block_indices", [])
+            full_trans = chunk.get("trans", "")
+            if chunk.get("is_error"):
+                full_trans = full_trans.replace("【结构校验失败，请手动检查】\n", "")
+            
+            group_blocks = [{"text": cache_data["all_blocks"][idx]["text"], "formats": cache_data["all_blocks"][idx]["formats"]} for idx in g_indices]
+            translated_texts, ok = self.docx_anchor_processor.validate_and_parse_response(full_trans, group_blocks)
+            
+            if ok:
+                for idx, text in zip(g_indices, translated_texts):
+                    all_translated_blocks[idx] = text
+
+        # 2. 按文件处理还原
+        block_to_file = cache_data.get("block_to_file", {})
+        file_to_blocks = {}
+        for b_idx, rel_path in block_to_file.items():
+            b_idx_int = int(b_idx)
+            if rel_path not in file_to_blocks:
+                file_to_blocks[rel_path] = []
+            file_to_blocks[rel_path].append(b_idx_int)
+            
+        for rel_path, b_indices in file_to_blocks.items():
+            abs_path = os.path.join(temp_dir, rel_path)
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f, 'xml')
+            
+            soup_blocks = self.docx_anchor_processor.create_blocks_from_soup(soup)
+            
+            if len(soup_blocks) != len(b_indices):
+                print(f"WARNING: Block count mismatch in {rel_path}. Cache: {len(b_indices)}, File: {len(soup_blocks)}.")
+                continue
+
+            for i, b_idx in enumerate(b_indices):
+                if b_idx in all_translated_blocks:
+                    self.docx_anchor_processor.restore_xml(soup_blocks[i], all_translated_blocks[b_idx], soup)
+            
+            # 保存修改后的 XML
+            with open(abs_path, 'w', encoding='utf-8') as f:
+                f.write(str(soup))
+
+        # 3. 重新打包
+        self.docx_anchor_processor.repack_docx(output_path)
+        return f"Successfully exported to DOCX via Anchor Strategy: {output_path}"

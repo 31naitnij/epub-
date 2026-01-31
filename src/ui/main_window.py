@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QFileDialog, QSplitter, QProgressBar,
                              QMessageBox, QGroupBox, QSpinBox, QDoubleSpinBox,
                              QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QCheckBox)
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QCoreApplication
 from PySide6.QtGui import QFont, QIcon
 import os
 import sys
@@ -44,7 +44,7 @@ class TranslationWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AI EPUB 翻译工具")
+        self.setWindowTitle("AI 文档翻译工具")
         self.resize(1100, 800)
         self.config_manager = ConfigManager()
         
@@ -70,10 +70,10 @@ class MainWindow(QMainWindow):
         
         epub_layout = QHBoxLayout()
         self.epub_path_edit = QLineEdit()
-        self.epub_path_edit.setPlaceholderText("选择 EPUB 文件...")
+        self.epub_path_edit.setPlaceholderText("选择 EPUB 或 DOCX 文件...")
         btn_browse_epub = QPushButton("选择文件")
         btn_browse_epub.clicked.connect(self.browse_epub)
-        epub_layout.addWidget(QLabel("EPUB 文件:"))
+        epub_layout.addWidget(QLabel("文档文件:"))
         epub_layout.addWidget(self.epub_path_edit)
         epub_layout.addWidget(btn_browse_epub)
         path_layout.addLayout(epub_layout)
@@ -271,8 +271,13 @@ class MainWindow(QMainWindow):
         self.processor = None
         self.current_cache_data = None
 
+    def update_status(self, text):
+        """更新底部的状态标签并强制刷新 UI"""
+        self.status_label.setText(text)
+        QCoreApplication.processEvents()
+
     def browse_epub(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", "All Supported Files (*.epub *.docx *.pdf *.txt *.md *.odt);;All Files (*.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", "Supported Files (*.epub *.docx);;All Files (*.*)")
         if file_path:
             self.epub_path_edit.setText(file_path)
             # Try auto-load cache if exists
@@ -353,18 +358,24 @@ class MainWindow(QMainWindow):
         cache_dir = self.cache_path_edit.text()
         self.processor = Processor(cache_dir)
         
-        # The current version only supports EPUB Anchor Mode.
-        self.current_mode = "epub_anchor"
-        
         try:
             if not autoload:
-                self.status_label.setText(f"正在执行分块解析 ({self.current_mode})...")
+                self.status_label.setText(f"正在执行分块解析...")
             
-            if not file_path.lower().endswith(".epub"):
-                QMessageBox.critical(self, "错误", "当前版本仅支持 EPUB 格式の手术式翻译。")
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext == ".docx":
+                self.current_mode = "docx_anchor"
+                cache_data = self.processor.process_docx_anchor_init(
+                    file_path, settings['chunk_size'], only_load=autoload, callback=self.update_status
+                )
+            elif ext == ".epub":
+                self.current_mode = "epub_anchor"
+                cache_data = self.processor.process_epub_anchor_init(
+                    file_path, settings['chunk_size'], only_load=autoload, callback=self.update_status
+                )
+            else:
+                self.update_status(f"错误: 不支持的文件格式: {ext}")
                 return False
-                
-            cache_data = self.processor.process_epub_anchor_init(file_path, settings['chunk_size'], only_load=autoload)
             
             if cache_data is None:
                 if autoload: return False
@@ -407,7 +418,7 @@ class MainWindow(QMainWindow):
             return True
         except Exception as e:
             if not autoload:
-                QMessageBox.critical(self, "错误", f"分块处理失败: {e}\n(如果是 DOCX/PDF 转换，请确保已安装 Pandoc)")
+                QMessageBox.critical(self, "错误", f"分块处理失败: {e}")
             return False
 
     def on_group_selection_changed(self):
@@ -672,9 +683,9 @@ class MainWindow(QMainWindow):
         if not os.path.exists(output_root):
             os.makedirs(output_root)
             
-        # Always EPUB since Pandoc/Docx modes are removed
-        target_format = "epub"
-        file_ext = "epub"
+        ext = os.path.splitext(file_path)[1].lower()
+        file_ext = ext.lstrip('.')
+        target_format = file_ext
 
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         output_path = os.path.join(output_root, f"translated_{base_name}.{file_ext}")

@@ -29,8 +29,9 @@ class EPubAnchorProcessor:
         char = self.BLOCK_DELIMS[index % len(self.BLOCK_DELIMS)]
         return char, char
 
-    def extract_epub(self, epub_path):
+    def extract_epub(self, epub_path, callback=None):
         """将 EPUB 完整解压到临时目录"""
+        if callback: callback("正在解压 EPUB 文件...")
         self.temp_dir = tempfile.mkdtemp(prefix="epub_trans_")
         with zipfile.ZipFile(epub_path, 'r') as zip_ref:
             zip_ref.extractall(self.temp_dir)
